@@ -39,7 +39,7 @@ browsecomp_benchmark_agent:
   responses_api_agents:
     browsecomp_agent:
       entrypoint: app.py
-      max_steps: 400
+      max_steps: 40
       keep_rounds: 9999
       nudge_steps: true
       max_context_tokens: 196608

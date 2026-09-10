@@ -58,10 +58,6 @@ def _contains_seq(haystack: list[str], needle: list[str]) -> bool:
     return any(haystack[i : i + len(needle)] == needle for i in range(len(haystack) - len(needle) + 1))
 
 
-def _env_file_path(argv: list[str]) -> Path:
-    return Path(argv[argv.index("--env-file") + 1])
-
-
 def _make_handle(
     staging: Path,
     *,
@@ -81,7 +77,7 @@ def _make_handle(
 
 @pytest.fixture
 def fake_binary(monkeypatch: pytest.MonkeyPatch) -> str:
-    monkeypatch.setattr(apptainer_provider, "_require_apptainer", lambda _bin_path=None: FAKE_BINARY)
+    monkeypatch.setattr(apptainer_provider, "_require_apptainer", lambda: FAKE_BINARY)
     return FAKE_BINARY
 
 
@@ -104,21 +100,6 @@ def test_require_apptainer(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(apptainer_provider.shutil, "which", lambda _name: None)
     with pytest.raises(RuntimeError, match="apptainer"):
         apptainer_provider._require_apptainer()
-
-
-def test_require_apptainer_uses_configured_binpath(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    binary = tmp_path / "apptainer"
-    binary.write_text("#!/bin/sh\n")
-    binary.chmod(0o755)
-    assert apptainer_provider._require_apptainer(str(tmp_path)) == str(binary)
-
-
-def test_apptainer_subprocess_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PATH", "/usr/bin")
-
-    assert apptainer_provider._apptainer_subprocess_env("/workspace/apptainer/bin")["PATH"] == (
-        "/workspace/apptainer/bin:/usr/bin"
-    )
 
 
 def test_coerce_config() -> None:
@@ -174,46 +155,6 @@ def test_resolve_image() -> None:
     assert resolve("/tmp/image.sif") == "/tmp/image.sif"
 
 
-def test_serialize_env_file_quotes_special_characters() -> None:
-    special = "spaces '$HOME' $(date) `id` \\\n+unicode=zażółć"
-    assert (
-        apptainer_provider._serialize_env_file({"EMPTY": "", "PLAIN": "value", "SPECIAL": special})
-        == f"EMPTY=''\nPLAIN=value\nSPECIAL={shlex.quote(special)}\n".encode()
-    )
-
-
-@pytest.mark.parametrize(
-    "env,error",
-    [
-        ({"NOT-VALID": "value"}, ValueError),
-        ({1: "value"}, ValueError),
-        ({"HOME": "/tmp/home"}, ValueError),
-        ({"VALID": "before\x00after"}, ValueError),
-        ({"VALID": 1}, TypeError),
-        ({"VALID": "\ud800"}, ValueError),
-    ],
-)
-def test_serialize_env_file_rejects_invalid_input(env: dict[Any, Any], error: type[Exception]) -> None:
-    with pytest.raises(error):
-        apptainer_provider._serialize_env_file(env)
-
-
-def test_private_env_file_is_mode_0600_and_always_removed(tmp_path: Path) -> None:
-    content = b"TOKEN='not-a-real-secret'\n"
-
-    with apptainer_provider._private_env_file(tmp_path, content) as path:
-        assert path is not None
-        assert path.read_bytes() == content
-        assert path.stat().st_mode & 0o777 == 0o600
-    assert not path.exists()
-
-    with pytest.raises(RuntimeError):
-        with apptainer_provider._private_env_file(tmp_path, content) as failed_path:
-            assert failed_path is not None
-            raise RuntimeError("failure")
-    assert not failed_path.exists()
-
-
 def test_to_sandbox_status() -> None:
     to_status = apptainer_provider._to_sandbox_status
     assert to_status("running") is SandboxStatus.RUNNING
@@ -255,15 +196,7 @@ async def test_create_builds_argv_and_runs_probe(
     staging = tmp_path / "staging"
     monkeypatch.setattr(apptainer_provider.tempfile, "mkdtemp", lambda prefix: str(staging.mkdir() or staging))
 
-    env_files: list[Path] = []
-
     def responder(argv: list[str]) -> tuple[int, str, str]:
-        if "--env-file" in argv:
-            env_file = _env_file_path(argv)
-            env_files.append(env_file)
-            assert env_file.read_bytes() == b"FOO=bar\n"
-            assert env_file.stat().st_mode & 0o777 == 0o600
-        assert "FOO=bar" not in argv
         if "start" in argv:
             return (0, "", "")
         if "exec" in argv:
@@ -299,7 +232,7 @@ async def test_create_builds_argv_and_runs_probe(
     assert start_argv[:3] == [FAKE_BINARY, "instance", "start"]
     assert _contains_seq(start_argv, ["--bind", f"{staging}:/sandbox"])
     assert _contains_seq(start_argv, ["--bind", "/data:/data"])
-    assert _contains_seq(start_argv, ["--no-eval", "--env-file", str(env_files[0])])
+    assert _contains_seq(start_argv, ["--env", "FOO=bar"])
     assert _contains_seq(start_argv, ["--cpus", "2.0"])
     assert _contains_seq(start_argv, ["--memory", "1024m"])
     assert "--nv" in start_argv
@@ -311,8 +244,6 @@ async def test_create_builds_argv_and_runs_probe(
     assert f"instance://{handle.sandbox_id}" in probe_argv
     assert probe_argv[-1] == apptainer_provider.READY_PROBE_COMMAND
     assert rec.calls[1]["timeout_s"] == 30
-    assert len(env_files) == 2
-    assert all(not path.exists() for path in env_files)
 
 
 @pytest.mark.parametrize("create_config", [{"apply_resource_limits": False}, {"extra_start_args": ["--fakeroot"]}])
@@ -396,20 +327,10 @@ async def test_create_start_failure_cleans_up(
 ) -> None:
     staging = tmp_path / "staging"
     monkeypatch.setattr(apptainer_provider.tempfile, "mkdtemp", lambda prefix: str(staging.mkdir() or staging))
-    env_file: Path | None = None
-
-    def responder(argv: list[str]) -> tuple[int, str, str]:
-        nonlocal env_file
-        env_file = _env_file_path(argv)
-        assert env_file.exists()
-        assert "not-a-real-secret" not in argv
-        return (1, "", "boom")
-
-    provider, _rec = _make_provider(monkeypatch, responder)
+    provider, _rec = _make_provider(monkeypatch, lambda argv: (1, "", "boom"))
 
     with pytest.raises(apptainer_provider.ApptainerCreateError, match="failed"):
-        await provider.create(SandboxSpec(image="docker://img", env={"TOKEN": "not-a-real-secret"}))
-    assert env_file is not None and not env_file.exists()
+        await provider.create(SandboxSpec(image="docker://img"))
     assert not staging.exists()
 
 
@@ -419,19 +340,12 @@ async def test_create_start_timeout_cleans_up(
     staging = tmp_path / "staging"
     monkeypatch.setattr(apptainer_provider.tempfile, "mkdtemp", lambda prefix: str(staging.mkdir() or staging))
 
-    env_file: Path | None = None
-
     def responder(argv: list[str]) -> tuple[int, str, str]:
-        nonlocal env_file
-        env_file = _env_file_path(argv)
-        assert env_file.exists()
-        raise TimeoutError(f"slow: {argv}")
+        raise TimeoutError("slow")
 
     provider, _rec = _make_provider(monkeypatch, responder)
-    with pytest.raises(apptainer_provider.ApptainerCreateError, match="timed out") as exc_info:
-        await provider.create(SandboxSpec(image="docker://img", env={"TOKEN": "not-a-real-secret"}))
-    assert "not-a-real-secret" not in str(exc_info.value)
-    assert env_file is not None and not env_file.exists()
+    with pytest.raises(apptainer_provider.ApptainerCreateError, match="timed out"):
+        await provider.create(SandboxSpec(image="docker://img"))
     assert not staging.exists()
 
 
@@ -460,17 +374,7 @@ async def test_create_probe_failure_cleans_up(
 # exec
 # --------------------------------------------------------------------------- #
 async def test_exec_normal_with_cwd_and_env(fake_binary: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    env_file: Path | None = None
-
-    def responder(argv: list[str]) -> tuple[int, str, str]:
-        nonlocal env_file
-        env_file = _env_file_path(argv)
-        assert env_file.read_bytes() == b"A=b\n"
-        assert env_file.stat().st_mode & 0o777 == 0o600
-        assert "A=b" not in argv
-        return (0, "hello", "")
-
-    provider, rec = _make_provider(monkeypatch, responder)
+    provider, rec = _make_provider(monkeypatch, lambda argv: (0, "hello", ""))
     handle = _make_handle(tmp_path)
 
     result = await provider.exec(handle, "echo hi", cwd="/work", env={"A": "b"})
@@ -482,34 +386,23 @@ async def test_exec_normal_with_cwd_and_env(fake_binary: str, monkeypatch: pytes
     argv = rec.calls[0]["argv"]
     assert argv[:2] == [FAKE_BINARY, "exec"]
     assert _contains_seq(argv, ["--pwd", "/work"])
-    assert env_file is not None
-    assert _contains_seq(argv, ["--no-eval", "--env-file", str(env_file)])
+    assert _contains_seq(argv, ["--env", "A=b"])
     assert argv[-4:] == ["instance://nemo-gym-x", "sh", "-c", "echo hi"]
     assert rec.calls[0]["timeout_s"] == 180  # default exec timeout
-    assert not env_file.exists()
 
 
 async def test_exec_reapplies_create_env_and_overrides_call_env(
     fake_binary: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    env_file: Path | None = None
-
-    def responder(argv: list[str]) -> tuple[int, str, str]:
-        nonlocal env_file
-        env_file = _env_file_path(argv)
-        assert env_file.read_bytes() == b"A=from-call\nB=base\n"
-        return (0, "", "")
-
-    provider, rec = _make_provider(monkeypatch, responder)
+    provider, rec = _make_provider(monkeypatch, lambda argv: (0, "", ""))
     handle = _make_handle(tmp_path, env={"A": "from-create", "B": "base"})
 
     await provider.exec(handle, "env", env={"A": "from-call"})
 
     argv = rec.calls[0]["argv"]
-    assert "A=from-call" not in argv
-    assert "B=base" not in argv
+    assert _contains_seq(argv, ["--env", "A=from-call"])
+    assert _contains_seq(argv, ["--env", "B=base"])
     assert "A=from-create" not in argv
-    assert env_file is not None and not env_file.exists()
 
 
 async def test_exec_empty_streams_are_strings(
@@ -565,26 +458,15 @@ async def test_exec_passes_stdin(fake_binary: str, monkeypatch: pytest.MonkeyPat
 
 
 async def test_exec_timeout(fake_binary: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    env_file: Path | None = None
-
     def responder(argv: list[str]) -> tuple[int, str, str]:
-        nonlocal env_file
-        env_file = _env_file_path(argv)
-        assert env_file.exists()
-        raise TimeoutError(f"too slow: {argv}")
+        raise TimeoutError("too slow")
 
     provider, _rec = _make_provider(monkeypatch, responder)
-    result = await provider.exec(
-        _make_handle(tmp_path, env={"TOKEN": "not-a-real-secret"}),
-        "sleep 99",
-        timeout_s=1,
-    )
+    result = await provider.exec(_make_handle(tmp_path), "sleep 99", timeout_s=1)
 
     assert result.return_code == apptainer_provider.SANDBOX_RUNTIME_RETURN_CODE
     assert result.error_type == "timeout"
     assert result.stdout is None
-    assert "not-a-real-secret" not in (result.stderr or "")
-    assert env_file is not None and not env_file.exists()
 
 
 async def test_exec_runtime_failure(fake_binary: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

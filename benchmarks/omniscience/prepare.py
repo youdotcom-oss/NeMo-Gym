@@ -27,8 +27,6 @@ Source: https://huggingface.co/datasets/ArtificialAnalysis/AA-Omniscience-Public
 import json
 from pathlib import Path
 
-from nemo_gym.global_config import get_hf_token
-
 
 BENCHMARK_DIR = Path(__file__).parent
 DATA_DIR = BENCHMARK_DIR / "data"
@@ -40,7 +38,7 @@ def prepare() -> Path:
     from datasets import load_dataset
 
     print("Downloading AA-Omniscience-Public from HuggingFace...")
-    ds = load_dataset("ArtificialAnalysis/AA-Omniscience-Public", split="train", token=get_hf_token())
+    ds = load_dataset("ArtificialAnalysis/AA-Omniscience-Public", split="train")
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 

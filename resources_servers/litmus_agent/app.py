@@ -108,7 +108,6 @@ from nemo_gym.base_resources_server import (
     BaseVerifyResponse,
     SimpleResourcesServer,
 )
-from nemo_gym.judge import judge_failsafe
 from nemo_gym.sandbox import AsyncSandbox, SandboxResources, SandboxSpec
 from nemo_gym.server_utils import SESSION_ID_KEY
 
@@ -652,9 +651,7 @@ class LitmusAgentResourcesServer(SimpleResourcesServer):
         # Swap the base ``/verify`` route for a session-aware wrapper so a
         # finished rollout's sandbox is reaped. verify() itself is untouched.
         app.router.routes = [r for r in app.router.routes if getattr(r, "path", None) != "/verify"]
-        # Re-apply judge_failsafe: replacing the base route would otherwise drop the
-        # JudgeError -> failures-sidecar guarantee SimpleResourcesServer makes globally.
-        app.post("/verify")(judge_failsafe(self._verify_and_cleanup))
+        app.post("/verify")(self._verify_and_cleanup)
 
         # Tear down any sessions still open when the server stops, so a normal
         # shutdown does not leak sandboxes.

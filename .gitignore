@@ -203,8 +203,6 @@ examples/neural_graphs/*.yml
 nemo_experiments/
 
 slurm*.out
-slurm-attach
-slurm-logs
 
 # Test data.
 tests/.data

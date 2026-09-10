@@ -27,7 +27,7 @@
 #   OUT=<dir> PARALLEL=<n> nemotron_recipes/lightning-3.5/instruct/gym/browsecomp/browsecomp.sh  # output dir, concurrency
 
 # Runs all 1266 problems. Unset for prepare.py's default 400-problem subset.
-export BROWSECOMP_RUN_FULL=1
+export BROWSECOMP_RUN_FULL=0
 
 # Used judge: GLM-5.1
 BROWSECOMP_JUDGE_MODEL="${BROWSECOMP_JUDGE_MODEL:?}"
@@ -74,6 +74,8 @@ gym eval run \
   "++$AGENT.save_model_call_using_vllm_tokenize_endpoint=false" \
   "++$POLICY.chat_template_kwargs={enable_thinking: true}" \
   "++$POLICY.extra_body={skip_special_tokens: false}" \
+  "++policy_model.responses_api_models.vllm_model.default_headers={OpenAI-Project: eoyou/nemotron-eval}" \
   "++overwrite_metrics_conflicts=true" \
+  ${DEBUG_HTTP:+"++global_aiohttp_client_request_debug=true"} \
   ${LIMIT:+--limit "$LIMIT"} \
   ${PARALLEL:+--concurrency "$PARALLEL"}

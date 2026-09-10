@@ -30,4 +30,7 @@ jobs:
           submodules: 'recursive'
 
       - name: Check lint
-        run: ./scripts/ci/lint.sh
+        run: |
+          pip install pre-commit==3.6.0
+          pre-commit install
+          pre-commit run --all-files --show-diff-on-failure --color=always

@@ -104,10 +104,9 @@ export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '\.venv' | tr '\n' ':' | sed 
 # Configure poetry to create virtualenv in the project directory (so it's mounted in container)
 export POETRY_VIRTUALENVS_IN_PROJECT=true
 
-# Retry `make build` with a timeout guard on the first attempt.
-# The timeout is env-overridable for hosts where a healthy build takes longer.
+# Retry `make build` with a timeout guard on the first attempt
 MAX_MAKE_BUILD_ATTEMPTS=2
-MAKE_BUILD_TIMEOUT_SECONDS="${MAKE_BUILD_TIMEOUT_SECONDS:-$((2 * 60))}"
+MAKE_BUILD_TIMEOUT_SECONDS=$((2 * 60))
 MAKE_BUILD_TIMEOUT_MINUTES=$((MAKE_BUILD_TIMEOUT_SECONDS / 60))
 
 attempt=1
@@ -118,10 +117,9 @@ while [ "$attempt" -le "$MAX_MAKE_BUILD_ATTEMPTS" ]; do
         if timeout "$MAKE_BUILD_TIMEOUT_SECONDS" make build; then
             echo "make build completed successfully."
             break
-        else
-            exit_code=$?
         fi
 
+        exit_code=$?
         if [ "$exit_code" -eq 124 ]; then
             echo "make build timed out after $MAKE_BUILD_TIMEOUT_MINUTES minutes."
         else
@@ -130,7 +128,6 @@ while [ "$attempt" -le "$MAX_MAKE_BUILD_ATTEMPTS" ]; do
 
         echo "Retrying make build after cleanup..."
         make clean || true
-        rm -rf .venv
         attempt=$((attempt + 1))
         continue
     fi
@@ -138,12 +135,10 @@ while [ "$attempt" -le "$MAX_MAKE_BUILD_ATTEMPTS" ]; do
     if make build; then
         echo "make build completed successfully."
         break
-    else
-        exit_code=$?
     fi
 
+    exit_code=$?
     echo "make build failed on the final attempt with exit code $exit_code."
-    exit "$exit_code"
 done
 
 # Install Python dependencies with poetry

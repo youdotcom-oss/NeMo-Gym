@@ -16,7 +16,6 @@ import os
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call
 
-import orjson
 from pytest import approx, fixture
 
 from nemo_gym.server_utils import SESSION_ID_KEY
@@ -290,7 +289,6 @@ class TestApp:
 
         post_mock = MagicMock()
         post_mock.json = AsyncMock(return_value=self._create_judge_response("correct: yes"))
-        post_mock.read = AsyncMock(return_value=orjson.dumps(post_mock.json.return_value))
         server_client.post = AsyncMock(return_value=post_mock)
 
         req = TavilySearchVerifyRequest(
@@ -313,7 +311,6 @@ class TestApp:
 
         post_mock = MagicMock()
         post_mock.json = AsyncMock(return_value=self._create_judge_response("correct: no"))
-        post_mock.read = AsyncMock(return_value=orjson.dumps(post_mock.json.return_value))
         server_client.post = AsyncMock(return_value=post_mock)
 
         req = TavilySearchVerifyRequest(

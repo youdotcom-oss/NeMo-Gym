@@ -14,7 +14,6 @@
 # limitations under the License.
 from unittest.mock import AsyncMock, MagicMock
 
-import orjson
 from pytest import approx, fixture
 
 from nemo_gym.config_types import ModelServerRef
@@ -188,7 +187,6 @@ class TestOmniscienceServer:
 
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._make_judge_response("A"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("1989")
@@ -217,7 +215,6 @@ class TestOmniscienceServer:
 
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._make_judge_response("B"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("1991")
@@ -242,7 +239,6 @@ class TestOmniscienceServer:
 
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._make_judge_response("C"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("About 28 million")
@@ -268,7 +264,6 @@ class TestOmniscienceServer:
 
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._make_judge_response("D"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("I don't have enough information to answer this question.")
@@ -294,7 +289,6 @@ class TestOmniscienceServer:
 
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._make_judge_response("A"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("<think>Let me recall...</think>Pancreas")
@@ -316,7 +310,6 @@ class TestOmniscienceServer:
 
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._make_judge_response("A"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("Test answer")
@@ -348,7 +341,6 @@ class TestOmniscienceServer:
 
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._make_judge_response("D"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         # Empty model output
@@ -379,7 +371,6 @@ class TestOmniscienceServer:
 
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._make_judge_response("A"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("Paris")
@@ -406,7 +397,6 @@ class TestOmniscienceServer:
 
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._make_judge_response("A"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("Paris")
@@ -428,7 +418,6 @@ class TestOmniscienceServer:
 
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._make_judge_response("D"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("<think>Let me think about this...")

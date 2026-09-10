@@ -1,0 +1,45 @@
+{
+    "name": "browsecomp",
+    "type": "benchmark",
+    "jsonl_fpath": "benchmarks/browsecomp/data/browsecomp_benchmark.jsonl",
+    "prepare_script": "benchmarks/browsecomp/prepare.py",
+    "prompt_config": null,
+    "num_repeats": 1,
+    "Number of examples": 400,
+    "Number of tools": {
+        "Total # non-null values": 400,
+        "Average": 3.0,
+        "Min": 3.0,
+        "Max": 3.0,
+        "Standard deviation": 0.0
+    },
+    "Json-dumped number of words (proxy for token count)": {
+        "Total # non-null values": 400,
+        "Average": 743.21,
+        "Min": 681.0,
+        "Max": 982.0,
+        "Standard deviation": 39.02
+    },
+    "Number of turns": {
+        "Total # non-null values": 400,
+        "Average": 1.0,
+        "Min": 1.0,
+        "Max": 1.0,
+        "Standard deviation": 0.0
+    },
+    "Temperature": {
+        "Total # non-null values": 0,
+        "Average": 0.0,
+        "Min": 0.0,
+        "Max": 0.0,
+        "Standard deviation": 0.0
+    },
+    "ground_truth": {
+        "unique_count": 398,
+        "total_count": 400
+    },
+    "question": {
+        "unique_count": 400,
+        "total_count": 400
+    }
+}

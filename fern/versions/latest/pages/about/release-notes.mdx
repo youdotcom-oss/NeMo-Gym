@@ -5,120 +5,7 @@ position: 4
 ---
 
 <AccordionGroup>
-<Accordion title="v0.5.0" defaultOpen>
-
-### Release Summary
-
-The NeMo Gym 0.5.0 release expands the sandbox ecosystem to seven providers, adds four new general-purpose agent harnesses (Codex, KiloCode, RemoteAgent, and Any-SWE) bringing the total to 20, adds 21 new benchmarks and environments, and wires rollout observability end-to-end from the model server boundary through agent transcripts.
-
-Highlights:
-
-- Seven sandbox providers: Docker, Daytona, ECS Fargate, Enroot, and OpenShell join OpenSandbox and Apptainer; large-scale OpenSandbox reliability significantly improved
-- Four new agent harnesses: Codex CLI, KiloCode, RemoteAgent, and `anyswe_agent`
-- Recompute rewards from stored rollouts without re-running inference with `gym eval reverify`
-- Rollout observability joined end-to-end: model-call capture, agent observations, and a standardized `ng_trajectory` schema
-- 21 new environments across six domains: Agentic, Knowledge and instruction following, Long context, Science and coding, Translation and multilingual, and Reasoning
-
-### First-Time Contributors
-
-We welcomed 22 new contributors to NeMo Gym with this release:
-
-- **@mpatel31415** added `gym eval reverify` command and `--judge-failed-only` flag for recovering failed judge rows
-- **@Glorf** added per-rollout model-call capture, Docker and ECS Fargate sandbox providers, rollout observation contract, Claude Code rollout observations, and standardized `ng_trajectory` schema
-- **@nblintao** added per-request policy endpoint override for the SWE agents, enabling RL training frameworks to route each episode through a per-episode recording proxy
-- **@JeffPengCoder** brought OSWorld — a stateful desktop GUI benchmark — into the benchmark catalog
-- **@rystewart-nvidia** added the Legal Agent Bench integration, exposing Harvey's 1,749-task LAB benchmark through standard Gym eval commands
-- **@fallintoplace** fixed the long-standing disagreement between runtime aggregate metrics and the persisted `output.jsonl`
-- **@jonathanlli** added RULER pretrain evaluation, enabling text-completion scoring for base and midtraining checkpoints
-- **@thompsonb** overhauled WMT24++ and FLORES translation evaluation (55 locales, 219 language pairs, chrF/spBLEU scoring); expanded MMLU-ProX to 29 languages
-- **@hkumar92** added the PinchBench agentic benchmark
-- **@pachmu** added ToolSandbox, IHEval, RoleMRC, and RAGTruth benchmarks
-
-Thank you to all 57 NeMo Gym contributors this cycle, including 22 first-time contributors!
-
-### Command Line Interface
-
-- **`gym eval reverify`** — re-run only the verifier on stored rollouts; `--judge-failed-only` recovers rows that failed due to a flaky judge without re-verifying successful rollouts
-- `gym list` and `gym search` extended to cover models, resources-servers, and agents; `gym list <type> <name>` drills into a single artifact
-- External plugins discoverable via `--search-dir` and environment variables; `-v/--verbose` now accepted before any subcommand
-
-### Sandboxing
-
-Five new built-in providers: **Docker**, **Daytona**, **ECS Fargate**, **Enroot**, and **OpenShell** join OpenSandbox and Apptainer. Provider choice is a one-line config swap — any agent built on `nemo_gym.sandbox` works with any provider unchanged.
-
-OpenSandbox reliability at scale is significantly improved: keepalive-bounded transport eliminates silent rollout zeroing at concurrency 300–1500; image registry auth supports private container images; sandbox resources are automatically labeled with team, user, and workload identifiers.
-
-See [Available Sandbox Providers](/nemo-gym/nemo_gym/sandbox/providers) for the full list.
-
-### Configure Agent Harnesses
-
-New harnesses join the existing set (Claude Code, Hermes, mini-SWE-Agent, OpenClaw, Pi, and more):
-
-- **Codex** and **KiloCode** integrate `codex exec` and `kilo run` respectively, routing model calls through Gym for per-rollout capture
-- **`anyswe_agent`** runs any Gym harness inside a SWE task container
-- **`swe_agents`** adds OpenCode as a supported agent framework alongside OpenHands, with DeepSWE and DeNovoSWE dataset support and message replay for trajectory branching
-- **RemoteAgent** drives any external service that implements `POST /v1/responses`, with Gym owning the tool loop and verification
-
-### Configure Models
-
-- vLLM can now drive `/v1/completions` for base and pretrain checkpoint evaluation via opt-in `use_completions_api`
-- All Gym model servers now accept `stream: true` on `/v1/chat/completions` via synthesized SSE, unblocking streaming-first clients such as OpenClaw and Codex
-- Add `expose_tools_over_mcp: true` to any resources server config to serve its tools over MCP with no handler code changes
-
-### Rollout Observability
-
-- Per-rollout model-call capture records requests, responses, token usage, and latency at the model server boundary
-- Claude Code transcripts populate `ng_agent_observations`; agent observations and model-call capture are joined through a standardized `ng_trajectory` schema
-- Judge failures are routed to a `_failures.jsonl` sidecar, keeping aggregate metrics over successfully-judged rows only
-
-### New Benchmarks and Environments
-
-21 new environments across six domains:
-
-- **Agentic:** PinchBench (147 real-world tasks), OSWorld (desktop GUI with VM-backed evaluation), Legal Agent Bench (1,749 Harvey LAB tasks), ToolSandbox (Apple multi-turn tool-use), BrowseComp (web research), BioMNIBench DA, Tau3 banking (BM25+grep offline eval path)
-- **Knowledge and instruction following:** SECQUE, FinanceBench, Finance SEC Search, IHEval (instruction hierarchy, rule-based), Litmus-Bench v0.1, RoleMRC (role-play MRC), RAGTruth (hallucination detection)
-- **Long context:** NIAH (retrieval with overlap penalty)
-- **Science and coding:** CVDP Agentic (expanded to support the agentic subset, harness-agnostic)
-- **Translation and multilingual:** WMT24++ (expanded from 5 to 55 locales), FLORES (expanded from 30 to 219 language pairs, chrF/spBLEU scoring), MMLU-ProX (expanded to 29 languages); RULER now supports pretrain text-completion evaluation
-- **Reasoning:** ReasoningGym environments — six agentic variants: Claude Code, Hermes, and four LangGraph-based variants (orchestrator, reflection, parallel thinking, and ReWOO)
-
-See the [Available Environments](https://github.com/NVIDIA-NeMo/Gym#-available-environments) table for the full list.
-
-### Deprecation Notices
-
-- WMT24++ and FLORES scores from prior versions are not comparable with this version's chrF/spBLEU output
-- Python 3.13.14 is now required (previously 3.12); users running Gym in Python 3.12 environments must upgrade
-
-### Bug Fixes
-
-- SciCode realigned to the AA 65-problem test set with per-rollout subtask accuracy reporting
-- Fixed silent rollout zeros at high concurrency against OpenSandbox (keepalive-bounded transport)
-- Fixed frozen rollouts in long-running benchmarks (TCP keepalive on global aiohttp connector)
-- Fixed `gym eval run` failing with `FileNotFoundError` when the output directory did not exist
-- Fixed `tool_choice` sent to vLLM without `tools`, causing request rejection
-- Fixed Claude Code `max_turns` hardcoded to 30; `max_turns: null` now removes the cap
-- Fixed Apptainer sandbox env vars injected into subprocess argv instead of environment
-- Fixed MCQA answer parsing for wrapped formats (`$D$`, `(D)`, `\boxed{\text{Answer: G}}`)
-- Fixed aggregate metrics including non-persisted rollouts, causing disagreement with `output.jsonl`
-
-### Documentation
-
-- Rewrote the key terminology glossary with a Gym overview, component map, and links to how-to pages
-- New page documenting the Anthropic Messages dialect (`POST /v1/messages`) and wiring Claude Code through a Gym model server
-- Updated NeMo RL v0.7.0 compatibility guidance
-- Migrated all remaining docs examples from legacy `ng_run`/`ng_collect_rollouts` to the unified `gym` CLI
-- Documented `gym list` and `gym search` extensions, external plugin discovery, and MCP auto-exposure
-- Added `gym eval reverify` and multi-reward verification contract documentation
-
-### Release Assets
-
-[GitHub Release v0.5.0](https://github.com/NVIDIA-NeMo/Gym/releases/tag/v0.5.0)
-
-
-
-</Accordion>
-
-<Accordion title="v0.4.0">
+<Accordion title="v0.4.0" defaultOpen>
 
 ### Release Summary
 
@@ -172,7 +59,7 @@ New harnesses join the existing built-in set (Claude Code, Hermes, OpenHands, an
 ### Configure Models
 
 - New `inference_provider` model server connects to any OpenAI-compatible hosted provider (Fireworks, Together.ai, OpenRouter, DeepInfra, Gemini, and more) with ready-made configs
-- Every Gym model server now speaks the Anthropic Messages API, so Anthropic-native harnesses like the Claude Code CLI can run against any model you serve with Gym — see [Anthropic Messages](/model-server/anthropic-messages)
+- Every Gym model server now speaks the Anthropic Messages API, so Anthropic-native harnesses like the Claude Code CLI can run against any model you serve with Gym
 
 ### New Benchmarks
 

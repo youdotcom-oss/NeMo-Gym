@@ -20,7 +20,6 @@ import pytest
 from pytest import approx, fixture
 
 from nemo_gym.config_types import ModelServerRef
-from nemo_gym.judge import JudgeError
 from nemo_gym.openai_utils import (
     NeMoGymResponse,
     NeMoGymResponseCreateParamsNonStreaming,
@@ -276,12 +275,13 @@ class TestJudgeVerify:
         assert result.reward == approx(0.0)
         assert result.n_aspects == 1
 
-    async def test_judge_call_failure_raises_judge_error(self) -> None:
+    async def test_judge_call_failure_counts_as_zero(self) -> None:
         server, mock = self._server()
         mock.post = AsyncMock(side_effect=RuntimeError("judge down"))
 
-        with pytest.raises(JudgeError, match="knowledge_range"):
-            await server.verify(self._request("role_related_mrc_answer_no_narration"))
+        result = await server.verify(self._request("role_related_mrc_answer_no_narration"))
+        assert result.reward == approx(0.0)
+        assert result.judge_errors == ["knowledge_range"]
 
     async def test_reasoning_model_think_tags_stripped_before_scoring(self) -> None:
         # If the judge is a reasoning model, <think> blocks may contain numbers

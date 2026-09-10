@@ -15,7 +15,6 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
-import orjson
 from pytest import approx, fixture
 
 from nemo_gym.config_types import ModelServerRef
@@ -214,7 +213,6 @@ class TestFrontierScienceJudgeServer:
 
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._make_judge_response("Reasoning ...\nJudgement: YES"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("CO2")
@@ -238,7 +236,6 @@ class TestFrontierScienceJudgeServer:
 
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._make_judge_response("Wrong: Judgement: NO"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("H2O")
@@ -261,7 +258,6 @@ class TestFrontierScienceJudgeServer:
 
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._make_judge_response("hand-wavy reasoning, no marker"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("H2O")
@@ -283,7 +279,6 @@ class TestFrontierScienceJudgeServer:
 
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._make_judge_response("Judgement: YES"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("<think>Let me recall...</think>Pancreas")
@@ -307,7 +302,6 @@ class TestFrontierScienceJudgeServer:
 
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._make_judge_response("Judgement: NO"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         # Model output has <think>... but no </think>: truncated mid-reasoning.
@@ -329,7 +323,6 @@ class TestFrontierScienceJudgeServer:
 
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._make_judge_response("Judgement: YES"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("Paris")
@@ -359,7 +352,6 @@ class TestFrontierScienceJudgeServer:
 
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._make_judge_response("Judgement: YES"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("answer")
@@ -401,7 +393,6 @@ class TestFrontierScienceJudgeServer:
         }
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=chat_response_dict)
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("Pancreas")
@@ -441,7 +432,6 @@ class TestFrontierScienceJudgeServer:
         }
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=chat_response_dict)
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("anything")
@@ -463,7 +453,6 @@ class TestFrontierScienceJudgeServer:
 
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._make_judge_response("Judgement: YES"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("Test answer")
@@ -493,7 +482,6 @@ class TestFrontierScienceJudgeServer:
         response_mock.json = AsyncMock(
             return_value=self._make_judge_response("Rubric notes...\nScore: 7.0/10\nJudgement: YES")
         )
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("Detailed research answer")
@@ -524,7 +512,6 @@ class TestFrontierScienceJudgeServer:
         response_mock.json = AsyncMock(
             return_value=self._make_judge_response("Rubric notes...\nScore: 6.5/10\nJudgement: NO")
         )
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("Incomplete research answer")
@@ -552,7 +539,6 @@ class TestFrontierScienceJudgeServer:
 
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._make_judge_response("Score: 8/10\nJudgement: YES"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("answer")
@@ -602,7 +588,6 @@ class TestFrontierScienceJudgeServer:
         }
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=chat_response_dict)
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = self._make_model_response("answer")

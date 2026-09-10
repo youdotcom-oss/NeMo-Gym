@@ -14,7 +14,6 @@
 # limitations under the License.
 from unittest.mock import AsyncMock, MagicMock
 
-import orjson
 import pytest
 from pytest import approx, fixture
 
@@ -365,7 +364,6 @@ class TestServer:
         response_mock.json = AsyncMock(
             return_value=self._judge_chat_response("Excellent. <points>7 out of 7</points>")
         )
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         # Model output ending in `\boxed{X}` — the verifier mirrors Skills'
@@ -394,7 +392,6 @@ class TestServer:
         server = ImoProofBenchJudgeServer(config=chat_config, server_client=server_mock)
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._judge_chat_response("<points>6 out of 7</points>"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = _make_response("<think>r</think>partial proof attempt \\boxed{partial}")
@@ -415,7 +412,6 @@ class TestServer:
         server = ImoProofBenchJudgeServer(config=chat_config, server_client=server_mock)
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._judge_chat_response("<points>1 out of 7</points>"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = _make_response("</think>weak attempt \\boxed{guess}")
@@ -437,7 +433,6 @@ class TestServer:
         server = ImoProofBenchJudgeServer(config=chat_config, server_client=server_mock)
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._judge_chat_response("<points>0 out of 7</points>"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = _make_response("</think>nope \\boxed{wrong}")
@@ -464,7 +459,6 @@ class TestServer:
         response_mock.json = AsyncMock(
             return_value=self._judge_chat_response("**Judgement**: Yes\n\n<points>1 out of 7</points>")
         )
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = _make_response("</think>solution \\boxed{42}")
@@ -491,7 +485,6 @@ class TestServer:
         server = ImoProofBenchJudgeServer(config=chat_config, server_client=server_mock)
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._judge_chat_response("Reasoning... \\boxed{Correct}"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = _make_response("</think>my proof \\boxed{42}")
@@ -573,7 +566,6 @@ class TestServer:
         server = ImoProofBenchJudgeServer(config=chat_config, server_client=server_mock)
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._judge_chat_response("<points>0 out of 7</points>"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = _make_response("</think>I think \\boxed{42}")
@@ -631,7 +623,6 @@ class TestServer:
         server = ImoProofBenchJudgeServer(config=chat_config, server_client=server_mock)
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._judge_chat_response("<points>0 out of 7</points>"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = _make_response(r"</think>\boxed{42}")
@@ -658,7 +649,6 @@ class TestServer:
         server = ImoProofBenchJudgeServer(config=chat_config, server_client=server_mock)
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._judge_chat_response("<points>7 out of 7</points>"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = _make_response(r"</think>\boxed{some_proof_summary_not_sympy_equal}")
@@ -685,7 +675,6 @@ class TestServer:
         server = ImoProofBenchJudgeServer(config=chat_config, server_client=server_mock)
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._judge_chat_response("<points>1 out of 7</points>"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = _make_response("</think>I think \\boxed{42}")
@@ -710,7 +699,6 @@ class TestServer:
         server = ImoProofBenchJudgeServer(config=chat_config, server_client=server_mock)
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._judge_chat_response("<points>7 out of 7</points>"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = _make_parsed_reasoning_response(
@@ -796,7 +784,6 @@ class TestServer:
         server = ImoProofBenchJudgeServer(config=chat_config, server_client=server_mock)
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._judge_chat_response("Inconclusive — no clear verdict."))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = _make_response("<think>r</think>some attempt \\boxed{X}")
@@ -819,7 +806,6 @@ class TestServer:
         server = ImoProofBenchJudgeServer(config=responses_config, server_client=server_mock)
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._judge_responses_response("<points>7 out of 7</points>"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = _make_response("<think>r</think>my proof \\boxed{Q.E.D.}")
@@ -843,7 +829,6 @@ class TestServer:
         server = ImoProofBenchJudgeServer(config=chat_config, server_client=server_mock)
         response_mock = AsyncMock()
         response_mock.json = AsyncMock(return_value=self._judge_chat_response("<points>7 out of 7</points>"))
-        response_mock.read = AsyncMock(return_value=orjson.dumps(response_mock.json.return_value))
         server_mock.post = AsyncMock(return_value=response_mock)
 
         model_response = _make_response("<think>r</think>some proof \\boxed{MY_BOXED_ANSWER}")

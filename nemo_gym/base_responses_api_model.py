@@ -371,21 +371,6 @@ def _token_count(value: Any) -> Optional[int]:
     return value if type(value) is int and value >= 0 else None
 
 
-def _usage_detail_token(
-    usage: Mapping[str, Any], detail_groups: tuple[str, ...], field_names: tuple[str, ...]
-) -> Optional[int]:
-    """Return the first valid token count across equivalent provider detail shapes."""
-    for group_name in detail_groups:
-        details = usage.get(group_name)
-        if not isinstance(details, Mapping):
-            continue
-        for field_name in field_names:
-            value = _token_count(details.get(field_name))
-            if value is not None:
-                return value
-    return None
-
-
 def extract_token_stats(usage: Any) -> dict[str, Optional[int]]:
     """Normalize token totals across Responses, Chat Completions, and Anthropic Messages usage.
 
@@ -417,22 +402,20 @@ def extract_token_stats(usage: Any) -> dict[str, Optional[int]]:
     cache_read = _token_count(usage.get("cache_read_input_tokens"))
     cache_creation = _token_count(usage.get("cache_creation_input_tokens"))
     if cache_read is not None or cache_creation is not None:
-        cache_total = (cache_read or 0) + (cache_creation or 0)
-        # Zero cache fields alone do not establish a missing prompt count.
-        if tokens_in is not None or cache_total > 0:
-            tokens_in = (tokens_in or 0) + cache_total
+        # A fully-cached response can omit input_tokens; use a 0 base so the folded prompt size is
+        # preserved rather than dropped to null. (Top-level cache_* keys are Anthropic-only, so the
+        # OpenAI/Responses path -- nested prompt_tokens_details.cached_tokens -- never enters here.)
+        tokens_in = (tokens_in or 0) + (cache_read or 0) + (cache_creation or 0)
     tokens_total = _token_count(usage.get("total_tokens"))
     if tokens_total is None and tokens_in is not None and tokens_out is not None:
         tokens_total = tokens_in + tokens_out
-    tokens_reasoning = _usage_detail_token(
-        usage, ("output_tokens_details", "completion_tokens_details"), ("reasoning_tokens",)
-    )
-    if tokens_reasoning is None:
-        tokens_reasoning = _token_count(usage.get("reasoning_output_tokens"))
+    details = usage.get("output_tokens_details") or usage.get("completion_tokens_details") or {}
+    if not isinstance(details, Mapping):
+        details = {}
     return {
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
-        "tokens_reasoning": tokens_reasoning,
+        "tokens_reasoning": _token_count(details.get("reasoning_tokens")),
         "tokens_total": tokens_total,
         "cache_creation_tokens": cache_creation,
     }
@@ -442,15 +425,12 @@ def _cache_signal(usage: Any) -> tuple[Optional[bool], Optional[int]]:
     """Cache hit/miss + cached-token count, from usage cache fields (OpenAI / Anthropic)."""
     if not isinstance(usage, Mapping):
         return None, None
-    cached = _usage_detail_token(
-        usage,
-        ("prompt_tokens_details", "input_tokens_details"),
-        ("cached_tokens", "cached_input_tokens"),
-    )
+    details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
+    if not isinstance(details, Mapping):
+        details = {}
+    cached = _token_count(details.get("cached_tokens"))
     if cached is None:
         cached = _token_count(usage.get("cache_read_input_tokens"))  # Anthropic
-    if cached is None:
-        cached = _token_count(usage.get("cached_input_tokens"))
     if cached is None:
         return None, None
     return cached > 0, cached
@@ -543,7 +523,6 @@ class ModelCallRecord(BaseModel):
     model: Optional[str] = None
     dialect: Optional[str] = None
     status_code: Optional[int] = None
-    response_status: Optional[str] = None
     finish_reason: Optional[str] = None
 
     # Wall-clock bounds around the downstream ASGI invocation, as UTC Unix timestamps. These are
@@ -618,7 +597,6 @@ def build_model_call_record(exchange: dict[str, Any], *, call_index: int) -> Mod
         model=model if isinstance(model, str) else None,
         dialect=exchange.get("dialect"),
         status_code=exchange.get("status_code"),
-        response_status=response.get("status") if isinstance(response.get("status"), str) else None,
         finish_reason=finish_reason,
         started_at=exchange.get("started_at"),
         completed_at=exchange.get("completed_at"),
@@ -668,7 +646,6 @@ def aggregate_model_call_records(calls: list[ModelCallRecord]) -> dict[str, Any]
         "tokens_out": _sum("tokens_out"),
         "tokens_reasoning": _sum("tokens_reasoning"),
         "tokens_total": _sum("tokens_total"),
-        "cached_tokens": _sum("cached_tokens"),
         "latency_total_ms": _sum("latency_total_ms"),
         "num_calls": len(calls),
     }
