@@ -55,9 +55,6 @@ from nemo_gym.server_utils import SESSION_ID_KEY, raise_for_status, request
 from resources_servers.browsecomp_advanced_harness.judge_prompt import JUDGE_PROMPT_TEMPLATE
 
 
-YouSearchMode = Literal["snippets", "highlights", "full_page", "eco", "lite"]
-
-
 class BrowseCompResourcesServerConfig(BaseResourcesServerConfig):
     # Search/browse backend. "tavily" (default), "exa", or "you". The chosen
     # provider's key must be present (validated below). exclude_domains are
@@ -411,6 +408,7 @@ class ExaAIOHTTPClient(BaseModel):
 
 
 MAX_YOU_EXCLUDE_DOMAINS = 500
+YouSearchMode = Literal["snippets", "highlights", "full_page", "eco", "lite"]
 
 
 class YouAIOHTTPClient(BaseModel):
@@ -433,7 +431,7 @@ class YouAIOHTTPClient(BaseModel):
             "data": json.dumps(body),
         }
 
-        MAX_NUM_TRIES = 3  # mirror the Tavily/Exa clients
+        MAX_NUM_TRIES = 3
         max_num_tries = MAX_NUM_TRIES
         tries = 0
         while tries < max_num_tries:
@@ -1634,7 +1632,7 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         try:
             results = await client.search(
                 query,
-                num_results=10,  # ponytail: you.com-only override, bump config.max_results if other providers need it too
+                num_results=self.config.max_results,
                 mode=self.config.you_search_mode,
                 crawl_timeout=self.config.you_crawl_timeout,
                 exclude_domains=self._exclude_domains,
