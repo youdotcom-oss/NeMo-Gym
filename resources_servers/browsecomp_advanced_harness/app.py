@@ -1582,7 +1582,7 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         try:
             results = await client.search(
                 query,
-                num_results=5,
+                num_results=self.config.max_results,
                 mode=self.config.you_search_mode,
                 crawl_timeout=self.config.you_crawl_timeout,
                 exclude_domains=self._exclude_domains,
