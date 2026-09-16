@@ -22,8 +22,7 @@
 # dataset and prepare script resolve relative to your working directory. Results
 # land in ./results/browsecomp.
 #
-# Uses You.com's "highlights" search mode (query-relevant passages per page)
-# instead of the "snippets" default — see browsecomp_you.sh for that variant.
+# Uses You.com's "highlights" search mode (query-relevant passages per page).
 #
 #   nemotron_recipes/lightning-3.5/instruct/gym/browsecomp/browsecomp.sh                         # full benchmark (1266 tasks x 1)
 #   LIMIT=3 nemotron_recipes/lightning-3.5/instruct/gym/browsecomp/browsecomp.sh                 # quick smoke
