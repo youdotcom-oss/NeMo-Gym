@@ -92,7 +92,7 @@ class TestRecordCall:
 
         TavilySearchResourcesServer._record_call(MagicMock(), metrics, "search", "tavily", "success", time())
 
-        rec = metrics.provider_calls[-1]
+        rec = metrics.async_search_provider_calls[-1]
         assert rec.num_429_retries == 3
         assert rec.num_other_retries == 1
         # Reset so the next call in this task starts from zero.
@@ -101,7 +101,7 @@ class TestRecordCall:
     def test_record_call_defaults_to_zero(self) -> None:
         metrics = SearchMetrics()
         TavilySearchResourcesServer._record_call(MagicMock(), metrics, "browse", "exa", "error", time())
-        rec = metrics.provider_calls[-1]
+        rec = metrics.async_search_provider_calls[-1]
         assert rec.num_429_retries == 0
         assert rec.num_other_retries == 0
 
@@ -109,7 +109,7 @@ class TestRecordCall:
 class TestVerifySummation:
     def test_sum_provider_retry_counts(self) -> None:
         metrics = SearchMetrics(
-            provider_calls=[
+            async_search_provider_calls=[
                 SearchProviderCallMetrics(
                     function="search",
                     provider="tavily",
@@ -134,7 +134,7 @@ class TestVerifySummation:
 
     def test_old_records_without_fields_sum_to_zero(self) -> None:
         metrics = SearchMetrics(
-            provider_calls=[
+            async_search_provider_calls=[
                 SearchProviderCallMetrics(
                     function="search", provider="tavily", status="success", start_time=0.0, end_time=1.0
                 )

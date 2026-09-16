@@ -216,7 +216,7 @@ class SearchProviderCallMetrics(BaseModel):
 
 
 class SearchMetrics(BaseModel):
-    provider_calls: List[SearchProviderCallMetrics] = Field(default_factory=list)
+    async_search_provider_calls: List[SearchProviderCallMetrics] = Field(default_factory=list)
 
 
 class BrowseCompVerifyResponse(BrowseCompVerifyRequest, JudgeEvaluation):
@@ -249,8 +249,8 @@ def _count_provider_retry(status: int) -> None:
 
 def _sum_provider_retry_counts(metrics: "SearchMetrics") -> tuple:
     """(total true 429s, total other retried statuses) across a session's calls."""
-    n429 = sum(c.num_429_retries for c in metrics.provider_calls)
-    n_other = sum(c.num_other_retries for c in metrics.provider_calls)
+    n429 = sum(c.num_429_retries for c in metrics.async_search_provider_calls)
+    n_other = sum(c.num_other_retries for c in metrics.async_search_provider_calls)
     return n429, n_other
 
 
@@ -1038,7 +1038,7 @@ class TavilySearchResourcesServer(SimpleResourcesServer):
         One record per provider HTTP request: per query for search, per call for browse."""
         retry_counts = _PROVIDER_RETRY_COUNTS.get() or {}
         _PROVIDER_RETRY_COUNTS.set(None)  # next call in this task starts from zero
-        metrics.provider_calls.append(
+        metrics.async_search_provider_calls.append(
             SearchProviderCallMetrics(
                 function=function,
                 provider=provider,
