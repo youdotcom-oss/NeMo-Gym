@@ -1567,7 +1567,7 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
 
     async def _you_search_one(self, query: str, max_length: int, metrics: "SearchMetrics") -> str:
         if len(query) > 400:
-            return "Query is too long"
+            return "Query is too long, use a maximum of 400 characters and 50 words."
 
         client = self._select_you_client()
         call_start = time()
