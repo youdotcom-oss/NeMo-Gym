@@ -591,3 +591,88 @@ class TestYouProvider:
         await server.search(self._req(), SearchRequest(queries=["q"]))
         _, kwargs = mock.search.call_args
         assert kwargs.get("num_results") == 10
+
+    # ---- include_domains ----
+
+    def test_normalize_domain_strips_scheme_www_path_and_case(self) -> None:
+        assert app_module._normalize_domain("https://WWW.SEC.gov/foo?bar=1") == "sec.gov"
+        assert app_module._normalize_domain("sec.gov") == "sec.gov"
+        assert app_module._normalize_domain("") == ""
+
+    def test_host_matches_subdomain_but_not_lookalike(self) -> None:
+        assert app_module._host_matches("https://en.wikipedia.org/wiki/X", ["wikipedia.org"])
+        assert app_module._host_matches("https://wikipedia.org", ["wikipedia.org"])
+        assert not app_module._host_matches("https://notwikipedia.org", ["wikipedia.org"])
+
+    def test_search_request_normalizes_and_caps_include_domains(self) -> None:
+        req = SearchRequest(queries=["q"], include_domains=["HTTPS://WWW.SEC.gov/", "", "wikipedia.org"])
+        assert req.include_domains == ["sec.gov", "wikipedia.org"]
+
+    def test_search_request_include_domains_defaults_to_none(self) -> None:
+        assert SearchRequest(queries=["q"]).include_domains is None
+
+    async def test_you_client_highlights_payload_includes_include_domains(self, monkeypatch) -> None:
+        client = YouAIOHTTPClient(headers={}, base_url="https://ydc-index.io", debug=False)
+        fake_request = AsyncMock(return_value=self._http_response(200, {"results": {}}))
+        monkeypatch.setattr(app_module, "request", fake_request)
+
+        await client.search("q", num_results=5, mode="highlights", crawl_timeout=10, include_domains=["sec.gov"])
+        kwargs = fake_request.call_args.kwargs
+        assert json.loads(kwargs["data"]) == {
+            "query": "q",
+            "count": 5,
+            "extraction": {"extraction_mode": "highlights"},
+            "include_domains": ["sec.gov"],
+        }
+
+    async def test_you_client_eco_payload_omits_include_domains(self, monkeypatch) -> None:
+        client = YouAIOHTTPClient(headers={}, base_url="https://ydc-index.io", debug=False)
+        fake_request = AsyncMock(return_value=self._http_response(200, {"results": {}}))
+        monkeypatch.setattr(app_module, "request", fake_request)
+
+        await client.search("q", num_results=5, mode="eco", crawl_timeout=10, include_domains=["sec.gov"])
+        kwargs = fake_request.call_args.kwargs
+        assert json.loads(kwargs["data"]) == {"query": "q", "count": 5}
+
+    async def test_you_search_include_domains_filters_client_side_even_in_eco(self) -> None:
+        server = self._config_server(you_search_mode="eco")
+        mock = MagicMock()
+        mock.search = AsyncMock(
+            return_value={
+                "results": {
+                    "web": [
+                        {"title": "InScope", "url": "https://sec.gov/filing", "snippets": ["x"]},
+                        {"title": "OutOfScope", "url": "https://other.com", "snippets": ["y"]},
+                    ]
+                }
+            }
+        )
+        server._you_clients = [mock]
+
+        resp = await server.search(self._req(), SearchRequest(queries=["q"], include_domains=["sec.gov"]))
+        assert "InScope" in resp.results_string
+        assert "OutOfScope" not in resp.results_string
+
+    async def test_you_search_include_domains_all_filtered_returns_notice(
+        self, server: YouSearchResourcesServer
+    ) -> None:
+        mock = MagicMock()
+        mock.search = AsyncMock(
+            return_value={"results": {"web": [{"title": "OutOfScope", "url": "https://other.com", "snippets": ["y"]}]}}
+        )
+        server._you_clients = [mock]
+
+        resp = await server.search(self._req(), SearchRequest(queries=["q"], include_domains=["sec.gov"]))
+        assert "OutOfScope" not in resp.results_string
+        assert "No results found in include_domains: sec.gov" in resp.results_string
+
+    async def test_you_search_include_domains_none_is_byte_identical_payload(
+        self, server: YouSearchResourcesServer
+    ) -> None:
+        mock = MagicMock()
+        mock.search = AsyncMock(return_value={"results": {"web": []}})
+        server._you_clients = [mock]
+
+        await server.search(self._req(), SearchRequest(queries=["q"]))
+        _, kwargs = mock.search.call_args
+        assert kwargs.get("include_domains") is None

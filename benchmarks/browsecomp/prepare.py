@@ -90,7 +90,17 @@ TOOLS = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": ("Search queries. All queries are executed in parallel."),
-                }
+                },
+                "include_domains": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional. Restrict results to these domains, e.g. "
+                        '["wikipedia.org", "sec.gov"]. Bare hostnames, no scheme or path; '
+                        "subdomains match. Omit to search the whole web -- only use this "
+                        "when you are confident the answer lives on a specific site."
+                    ),
+                },
             },
             "required": ["queries"],
         },

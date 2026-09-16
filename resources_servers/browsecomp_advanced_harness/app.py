@@ -57,6 +57,32 @@ from resources_servers.browsecomp_advanced_harness.judge_prompt import JUDGE_PRO
 
 YouSearchMode = Literal["snippets", "highlights", "full_page", "eco", "lite"]
 
+MAX_INCLUDE_DOMAINS = 20
+
+
+def _normalize_domain(raw: str) -> str:
+    """ "https://WWW.SEC.gov/foo" -> "sec.gov". Bare hostname, lowercase, no www."""
+    s = (raw or "").strip().lower()
+    s = re.sub(r"^[a-z]+://", "", s).split("/")[0]
+    if s.startswith("www."):
+        s = s[len("www.") :]
+    return s
+
+
+def _host_matches(url: str, domains: List[str]) -> bool:
+    """True if url's hostname equals or is a subdomain of one of domains."""
+    hostname = urlparse(url).hostname or ""
+    return any(hostname == domain or hostname.endswith("." + domain) for domain in domains)
+
+
+def _finalize_search_blocks(blocks: List[str], include_domains: Optional[List[str]]) -> str:
+    """blocks[0] is always the `[Search Query]: ...` header. If include_domains filtered
+    every result out, say so instead of returning a bare header that reads as 'no results
+    exist' rather than 'your filter was too narrow'."""
+    if include_domains and len(blocks) == 1:
+        blocks.append(f"No results found in include_domains: {', '.join(include_domains)}")
+    return "\n".join(blocks)
+
 
 class BrowseCompResourcesServerConfig(BaseResourcesServerConfig):
     # Search/browse backend. "tavily" (default), "exa", or "you". The chosen
@@ -105,6 +131,7 @@ class BrowseCompResourcesServerConfig(BaseResourcesServerConfig):
 
 class SearchRequest(BaseModel):
     queries: Optional[List[str]] = None  # Make optional to handle missing args gracefully
+    include_domains: Optional[List[str]] = None
     max_total_length: int = 30000
 
     @model_validator(mode="before")
@@ -130,6 +157,13 @@ class SearchRequest(BaseModel):
         data = dict(data)
         data["queries"] = queries
         return data
+
+    @model_validator(mode="after")
+    def _normalize_include_domains(self) -> "SearchRequest":
+        if self.include_domains:
+            normalized = [_normalize_domain(d) for d in self.include_domains]
+            self.include_domains = [d for d in normalized if d][:MAX_INCLUDE_DOMAINS] or None
+        return self
 
 
 class SearchResponse(BaseModel):
@@ -481,10 +515,11 @@ class YouAIOHTTPClient(BaseModel):
         mode: YouSearchMode,
         crawl_timeout: int,
         exclude_domains: Optional[List[str]] = None,
+        include_domains: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         # eco and lite are separate, lighter endpoints rather than extraction levels:
-        # query and count only, no extraction, no exclude_domains support server-side
-        # (client-side exclusion in _is_url_excluded covers both).
+        # query and count only, no extraction, no exclude_domains/include_domains support
+        # server-side (client-side filtering in _is_url_excluded/_host_matches covers both).
         if mode == "eco":
             return await self._post("/v1/eco_search", {"query": query, "count": num_results})
         if mode == "lite":
@@ -501,6 +536,8 @@ class YouAIOHTTPClient(BaseModel):
             body["crawl_timeout"] = crawl_timeout
         if exclude_domains:
             body["exclude_domains"] = list(exclude_domains)[:MAX_YOU_EXCLUDE_DOMAINS]
+        if include_domains:
+            body["include_domains"] = list(include_domains)[:MAX_INCLUDE_DOMAINS]
         return await self._post("/v1/search", body)
 
     async def get_contents(self, urls: List[str], crawl_timeout: int) -> List[Dict[str, Any]]:
@@ -1115,8 +1152,7 @@ class TavilySearchResourcesServer(SimpleResourcesServer):
             f"[tavily_call function=search status=success duration_s={time() - call_start:.2f} query={query[:80]!r} n_results={len(results.get('results', []))}]",
             flush=True,
         )
-        postprocessed_results = self._postprocess_search_results(query, results, max_length)
-        return postprocessed_results
+        return self._postprocess_search_results(query, results, max_length)
 
     async def _search_one_to_disk(
         self, query: str, page_writer: "_PageWriter", max_per_query: int, metrics: "SearchMetrics"
@@ -1323,8 +1359,7 @@ class TavilySearchResourcesServer(SimpleResourcesServer):
 
     def _is_url_excluded(self, url: str) -> bool:
         """Check if the URL's domain is in the excluded domains list."""
-        hostname = urlparse(url).hostname or ""
-        return any(hostname == domain or hostname.endswith("." + domain) for domain in self._exclude_domains)
+        return _host_matches(url, self._exclude_domains)
 
     def _postprocess_search_results(self, query: str, results: dict, max_length: int) -> str:
         blocks = [f"[Search Query]: {query}"]
@@ -1574,7 +1609,9 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         snippets = result.get("snippets") or []
         return " ... ".join(s for s in snippets if s) or (result.get("description") or "")
 
-    async def _you_search_one(self, query: str, max_length: int, metrics: "SearchMetrics") -> str:
+    async def _you_search_one(
+        self, query: str, max_length: int, metrics: "SearchMetrics", include_domains: Optional[List[str]] = None
+    ) -> str:
         if len(query) > 400:
             return "Query is too long, use a maximum of 400 characters and 50 words."
 
@@ -1587,6 +1624,7 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
                 mode=self.config.you_search_mode,
                 crawl_timeout=self.config.you_crawl_timeout,
                 exclude_domains=self._exclude_domains,
+                include_domains=include_domains,
             )
         except ClientResponseError as e:
             self._record_call(metrics, "search", "you", "error", call_start)
@@ -1607,6 +1645,8 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
             url = result.get("url", "") or ""
             if self._is_url_excluded(url):  # eco / API-side exclusion doesn't apply; enforce client-side
                 continue
+            if include_domains and not _host_matches(url, include_domains):  # same for API-side inclusion
+                continue
             title = result.get("title", "") or ""
             snippet = self._you_result_body(result)
             # cap per-result content: without this, a single full_page markdown body can
@@ -1619,10 +1659,15 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
                 break
             blocks.append(entry)
             running_len += len(entry)
-        return "\n".join(blocks)
+        return _finalize_search_blocks(blocks, include_domains)
 
     async def _you_search_one_to_disk(
-        self, query: str, page_writer: "_PageWriter", max_per_query: int, metrics: "SearchMetrics"
+        self,
+        query: str,
+        page_writer: "_PageWriter",
+        max_per_query: int,
+        metrics: "SearchMetrics",
+        include_domains: Optional[List[str]] = None,
     ) -> str:
         """Terminal mode: run one You.com search, write each result's body to disk, return
         title/url/content/[Saved to] metadata. Mirrors the other providers' disk-mode formatting."""
@@ -1638,6 +1683,7 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
                 mode=self.config.you_search_mode,
                 crawl_timeout=self.config.you_crawl_timeout,
                 exclude_domains=self._exclude_domains,
+                include_domains=include_domains,
             )
         except ClientResponseError as e:
             self._record_call(metrics, "search", "you", "error", call_start)
@@ -1658,6 +1704,8 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
             url = result.get("url", "") or ""
             if self._is_url_excluded(url):
                 continue
+            if include_domains and not _host_matches(url, include_domains):
+                continue
             title = result.get("title", "") or ""
             body = self._you_result_body(result)
             search_content = body[:500]
@@ -1675,7 +1723,7 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
                 entry = f"[Title]: {title}\n[URL]: {url}\n[Snippet]: {search_content}\n{saved_line}"
             blocks.append(entry)
             running_len += len(entry)
-        return "\n".join(blocks)
+        return _finalize_search_blocks(blocks, include_domains)
 
     async def search(self, request: Request, body: SearchRequest) -> SearchResponse:
         sid = request.session[SESSION_ID_KEY]
@@ -1691,11 +1739,14 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         page_writer = self._get_page_writer(sid)
         if page_writer is not None:
             results = await asyncio.gather(
-                *[self._you_search_one_to_disk(q, page_writer, max_per_query_length, metrics) for q in body.queries]
+                *[
+                    self._you_search_one_to_disk(q, page_writer, max_per_query_length, metrics, body.include_domains)
+                    for q in body.queries
+                ]
             )
         else:
             results = await asyncio.gather(
-                *[self._you_search_one(q, max_per_query_length, metrics) for q in body.queries]
+                *[self._you_search_one(q, max_per_query_length, metrics, body.include_domains) for q in body.queries]
             )
 
         return SearchResponse(results_string="\n\n".join(results))
