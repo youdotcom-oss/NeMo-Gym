@@ -69,6 +69,7 @@ gym eval run \
   --max-output-tokens 32768 \
   "++$QWEN.model=$BROWSECOMP_JUDGE_MODEL" \
   "++$HARNESS.judge_model_server.name=Qwen3-235B-A22B-Instruct-2507-FP8" \
+  "++$HARNESS.search_provider=tavily" \
   "++$HARNESS.tavily_api_key=$TAVILY_API_KEY" \
   "++$HARNESS.exclude_domains_file_path=$EXCLUDE_JSON" \
   "++$AGENT.save_model_call_using_vllm_tokenize_endpoint=false" \
