@@ -77,6 +77,5 @@ gym eval run \
   # CoreWeave inference: set OPENAI_PROJECT=<org>/<project> to tag requests. Unset elsewhere.
   ${OPENAI_PROJECT:+"++policy_model.responses_api_models.vllm_model.default_headers={OpenAI-Project:$OPENAI_PROJECT}"} \
   "++overwrite_metrics_conflicts=true" \
-  ${DEBUG_HTTP:+"++global_aiohttp_client_request_debug=true"} \
   ${LIMIT:+--limit "$LIMIT"} \
   ${PARALLEL:+--concurrency "$PARALLEL"}
