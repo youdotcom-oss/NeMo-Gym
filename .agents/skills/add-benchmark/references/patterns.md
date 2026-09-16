@@ -22,16 +22,12 @@ Detailed patterns, schemas, and code examples for adding benchmarks to NeMo-Gym.
 
 ```python
 from nemo_gym.base_resources_server import (
-    SimpleResourcesServer,
-    BaseResourcesServerConfig,
-    BaseVerifyRequest,
-    BaseVerifyResponse,
+    SimpleResourcesServer, BaseResourcesServerConfig,
+    BaseVerifyRequest, BaseVerifyResponse,
 )
-
 
 class MyConfig(BaseResourcesServerConfig):
     pass
-
 
 class MyServer(SimpleResourcesServer):
     config: MyConfig
@@ -41,7 +37,6 @@ class MyServer(SimpleResourcesServer):
         expected = (body.verifier_metadata or {}).get("expected_answer")
         reward = 1.0 if model_output.strip() == expected else 0.0
         return BaseVerifyResponse(**body.model_dump(), reward=reward)
-
 
 if __name__ == "__main__":
     MyServer.run_webserver()
@@ -55,28 +50,21 @@ from time import time
 from typing import Any, Dict, List, Optional
 import ray
 from nemo_gym.base_resources_server import (
-    SimpleResourcesServer,
-    BaseResourcesServerConfig,
-    BaseRunRequest,
-    BaseVerifyRequest,
-    BaseVerifyResponse,
+    SimpleResourcesServer, BaseResourcesServerConfig,
+    BaseRunRequest, BaseVerifyRequest, BaseVerifyResponse,
 )
-
 
 class MyConfig(BaseResourcesServerConfig):
     num_processes: int = 8
     timeout_secs: int = 30
     debug: bool = False
 
-
 class MyVerifyRequest(BaseRunRequest, BaseVerifyRequest):
     verifier_metadata: Optional[Dict[str, Any]] = None
-
 
 class MyVerifyResponse(BaseVerifyResponse):
     extracted_code: Optional[str] = None
     # ... benchmark-specific result fields
-
 
 class MyServer(SimpleResourcesServer):
     config: MyConfig
@@ -131,7 +119,6 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 _DEFAULT_PREFIX = _SCRIPT_DIR / ".toolname"
 _INSTALL_SCRIPT = _SCRIPT_DIR / "scripts" / "install_tool.sh"
 
-
 def ensure_tool() -> None:
     if shutil.which("tool"):
         LOG.info("tool found: %s", shutil.which("tool"))
@@ -167,7 +154,6 @@ def model_post_init(self, context):
 
 ```python
 from setup_tool import ensure_tool
-
 
 def pytest_configure(config):
     try:
@@ -319,20 +305,16 @@ For benchmarks where the model gets error feedback and retries:
 
 ```python
 from nemo_gym.base_responses_api_agent import (
-    BaseResponsesAPIAgentConfig,
-    Body,
-    SimpleResponsesAPIAgent,
+    BaseResponsesAPIAgentConfig, Body, SimpleResponsesAPIAgent,
 )
 from nemo_gym.config_types import ModelServerRef, ResourcesServerRef
 from nemo_gym.openai_utils import NeMoGymResponse, NeMoGymResponseCreateParamsNonStreaming
 from nemo_gym.server_utils import raise_for_status
 
-
 class MyAgentConfig(BaseResponsesAPIAgentConfig):
     resources_server: ResourcesServerRef
     model_server: ModelServerRef
     max_correction_turns: int = 3
-
 
 class MyAgent(SimpleResponsesAPIAgent):
     config: MyAgentConfig
@@ -353,10 +335,8 @@ class MyAgent(SimpleResponsesAPIAgent):
 
         # 1. Seed session
         seed = await self.server_client.post(
-            self.config.resources_server.name,
-            "/seed_session",
-            json=body.model_dump(),
-            cookies=cookies,
+            self.config.resources_server.name, "/seed_session",
+            json=body.model_dump(), cookies=cookies,
         )
         cookies = seed.cookies
 
@@ -364,10 +344,8 @@ class MyAgent(SimpleResponsesAPIAgent):
         for turn in range(self.config.max_correction_turns + 1):
             # 2. Generate
             gen = await self.server_client.post(
-                self.config.name,
-                "/v1/responses",
-                json=current_input,
-                cookies=cookies,
+                self.config.name, "/v1/responses",
+                json=current_input, cookies=cookies,
             )
             cookies = gen.cookies
             model_json = await gen.json()
@@ -376,10 +354,8 @@ class MyAgent(SimpleResponsesAPIAgent):
             verify_data = body.model_dump()
             verify_data["response"] = model_json
             verify = await self.server_client.post(
-                self.config.resources_server.name,
-                "/verify",
-                json=verify_data,
-                cookies=cookies,
+                self.config.resources_server.name, "/verify",
+                json=verify_data, cookies=cookies,
             )
             cookies = verify.cookies
             result = await verify.json()
@@ -479,8 +455,9 @@ from resources_servers.my_benchmark.app import MyServer, MyConfig
 
 SKIP_REASON = "tool-name not installed"
 
-
-@pytest.mark.skipif(shutil.which("tool-name") is None, reason=SKIP_REASON)
+@pytest.mark.skipif(
+    shutil.which("tool-name") is None, reason=SKIP_REASON
+)
 class TestMyServer:
     def setup_method(self):
         self.config = MyConfig(host="0.0.0.0", port=8080, entrypoint="", name="")
@@ -509,7 +486,6 @@ import argparse
 import json
 from pathlib import Path
 
-
 def convert_problem(problem: dict, system_prompt: str) -> dict:
     return {
         "responses_create_params": {
@@ -523,7 +499,6 @@ def convert_problem(problem: dict, system_prompt: str) -> dict:
             "task_id": problem["id"],
         },
     }
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -550,7 +525,6 @@ def main():
             for problem in data[:5]:
                 record = convert_problem(problem, system_prompt)
                 out.write(json.dumps(record) + "\n")
-
 
 if __name__ == "__main__":
     main()
@@ -676,7 +650,6 @@ When wrapping such a library, create an adapter class that mimics the library's 
 ```python
 from nemo_gym.server_utils import request
 
-
 class AIOHTTPAdapter(BaseModel):
     headers: Dict[str, str]
     base_url: str
@@ -699,7 +672,9 @@ Then in `model_post_init()`, replace the library's internal client:
 ```python
 def model_post_init(self, context):
     self._external_client = ExternalLibraryClient(api_key=key)
-    self._external_client._http_client = AIOHTTPAdapter.from_httpx_client(self._external_client._http_client)
+    self._external_client._http_client = AIOHTTPAdapter.from_httpx_client(
+        self._external_client._http_client
+    )
 ```
 
 ---
