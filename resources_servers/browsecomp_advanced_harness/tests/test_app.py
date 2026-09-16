@@ -34,11 +34,11 @@ from nemo_gym.openai_utils import (
 )
 from nemo_gym.server_utils import ServerClient
 from resources_servers.browsecomp_advanced_harness.app import (
+    BrowseCompResourcesServerConfig,
+    BrowseCompVerifyRequest,
     BrowseRequest,
     SearchRequest,
     TavilySearchResourcesServer,
-    BrowseCompResourcesServerConfig,
-    BrowseCompVerifyRequest,
 )
 
 

@@ -31,12 +31,12 @@ from pytest import fixture
 import resources_servers.browsecomp_advanced_harness.app as app_module
 from nemo_gym.server_utils import SESSION_ID_KEY, ServerClient
 from resources_servers.browsecomp_advanced_harness.app import (
+    BrowseCompResourcesServerConfig,
     BrowseRequest,
     ExaAIOHTTPClient,
-    TavilySearchAIOHTTPClient,
     SearchRequest,
+    TavilySearchAIOHTTPClient,
     TavilySearchResourcesServer,
-    BrowseCompResourcesServerConfig,
 )
 
 
@@ -253,9 +253,7 @@ class TestExaProvider:
         server._exa_clients = [mock]
 
         await server.search(self._req(), SearchRequest(queries=["q1", "q2", "q3"]))
-        recs = [
-            c for c in server._session_id_to_metrics["test_session_id"].provider_calls if c.function == "search"
-        ]
+        recs = [c for c in server._session_id_to_metrics["test_session_id"].provider_calls if c.function == "search"]
         assert len(recs) == 3
         assert all(c.provider == "exa" for c in recs)
         assert all(c.time_taken is not None for c in recs)
@@ -266,9 +264,7 @@ class TestExaProvider:
         server._exa_clients = [mock]
 
         await server.browse(self._req(), BrowseRequest(urls=["https://x.com"]))
-        recs = [
-            c for c in server._session_id_to_metrics["test_session_id"].provider_calls if c.function == "browse"
-        ]
+        recs = [c for c in server._session_id_to_metrics["test_session_id"].provider_calls if c.function == "browse"]
         assert len(recs) == 1
         assert recs[0].provider == "exa"
 

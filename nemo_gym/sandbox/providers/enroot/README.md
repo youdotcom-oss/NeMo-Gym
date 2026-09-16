@@ -70,7 +70,7 @@ from nemo_gym.sandbox.api import Sandbox
 from nemo_gym.sandbox.providers import SandboxSpec
 
 spec = SandboxSpec(
-    image="ubuntu:22.04",              # or "nvcr.io/nvidia/pytorch:24.01", or "/path/to/image.sqsh"
+    image="ubuntu:22.04",  # or "nvcr.io/nvidia/pytorch:24.01", or "/path/to/image.sqsh"
     workdir="/sandbox",
     env={"GREETING": "hello"},
     files={"/sandbox/input.txt": "some seed content"},
@@ -92,6 +92,7 @@ with Sandbox({"enroot": {}}, spec) as sandbox:
 ```python
 from nemo_gym.sandbox.api import AsyncSandbox
 from nemo_gym.sandbox.providers import SandboxSpec
+
 
 async def run():
     spec = SandboxSpec(image="ubuntu:22.04", workdir="/sandbox")

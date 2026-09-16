@@ -55,6 +55,9 @@ from nemo_gym.server_utils import SESSION_ID_KEY, raise_for_status, request
 from resources_servers.browsecomp_advanced_harness.judge_prompt import JUDGE_PROMPT_TEMPLATE
 
 
+YouSearchMode = Literal["snippets", "highlights", "full_page", "eco", "lite"]
+
+
 class BrowseCompResourcesServerConfig(BaseResourcesServerConfig):
     # Search/browse backend. "tavily" (default), "exa", or "you". The chosen
     # provider's key must be present (validated below). exclude_domains are
@@ -407,10 +410,6 @@ class ExaAIOHTTPClient(BaseModel):
         return await self._post("/contents", body)
 
 
-MAX_YOU_EXCLUDE_DOMAINS = 500
-YouSearchMode = Literal["snippets", "highlights", "full_page", "eco", "lite"]
-
-
 class YouAIOHTTPClient(BaseModel):
     """Async You.com REST client over NeMo Gym's global aiohttp client (no SDK).
 
@@ -418,6 +417,8 @@ class YouAIOHTTPClient(BaseModel):
     search endpoints (``/v1/search`` and the lighter ``/v1/eco_search``) plus
     ``/v1/contents`` for explicit-URL page content.
     """
+
+    MAX_EXCLUDE_DOMAINS: ClassVar[int] = 500
 
     headers: Dict[str, str]
     base_url: str = "https://ydc-index.io"
@@ -498,7 +499,7 @@ class YouAIOHTTPClient(BaseModel):
             }
             body["crawl_timeout"] = crawl_timeout
         if exclude_domains:
-            body["exclude_domains"] = list(exclude_domains)[:MAX_YOU_EXCLUDE_DOMAINS]
+            body["exclude_domains"] = list(exclude_domains)[: self.MAX_EXCLUDE_DOMAINS]
         return await self._post("/v1/search", body)
 
     async def get_contents(self, urls: List[str], crawl_timeout: int) -> List[Dict[str, Any]]:

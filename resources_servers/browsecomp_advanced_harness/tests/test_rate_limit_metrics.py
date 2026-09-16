@@ -20,10 +20,10 @@ import resources_servers.browsecomp_advanced_harness.app as app_module
 from resources_servers.browsecomp_advanced_harness.app import (
     _PROVIDER_RETRY_COUNTS,
     ExaAIOHTTPClient,
-    TavilySearchAIOHTTPClient,
     SearchMetrics,
-    TavilySearchResourcesServer,
     SearchProviderCallMetrics,
+    TavilySearchAIOHTTPClient,
+    TavilySearchResourcesServer,
     _sum_provider_retry_counts,
 )
 
