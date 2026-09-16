@@ -74,7 +74,6 @@ gym eval run \
   "++$AGENT.save_model_call_using_vllm_tokenize_endpoint=false" \
   "++$POLICY.chat_template_kwargs={enable_thinking: true}" \
   "++$POLICY.extra_body={skip_special_tokens: false}" \
-  # CoreWeave inference: set OPENAI_PROJECT=<org>/<project> to tag requests. Unset elsewhere.
   ${OPENAI_PROJECT:+"++policy_model.responses_api_models.vllm_model.default_headers={OpenAI-Project:$OPENAI_PROJECT}"} \
   "++overwrite_metrics_conflicts=true" \
   ${LIMIT:+--limit "$LIMIT"} \
