@@ -30,7 +30,7 @@
 #   OUT=<dir> PARALLEL=<n> nemotron_recipes/lightning-3.5/instruct/gym/browsecomp/browsecomp.sh  # output dir, concurrency
 
 # Runs all 1266 problems. Unset for prepare.py's default 400-problem subset.
-export BROWSECOMP_RUN_FULL=0
+export BROWSECOMP_RUN_FULL=1
 
 # Used judge: GLM-5.1
 BROWSECOMP_JUDGE_MODEL="${BROWSECOMP_JUDGE_MODEL:?}"

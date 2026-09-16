@@ -91,14 +91,14 @@ class BrowseCompResourcesServerConfig(BaseResourcesServerConfig):
 
     @model_validator(mode="after")
     def _check_provider_key(self) -> "BrowseCompResourcesServerConfig":
+        if self.search_provider == "you" and not self.ydc_api_key:
+            raise ValueError("ydc_api_key is required when search_provider='you'")
         if self.search_provider == "tavily" and not self.tavily_api_key:
             raise ValueError("tavily_api_key is required when search_provider='tavily'")
         if self.search_provider == "exa" and not self.exa_api_key:
             raise ValueError("exa_api_key is required when search_provider='exa'")
-        if self.search_provider == "you" and not self.ydc_api_key:
-            raise ValueError("ydc_api_key is required when search_provider='you'")
-        if self.search_provider not in ("tavily", "exa", "you"):
-            raise ValueError(f"search_provider must be 'tavily', 'exa', or 'you', got {self.search_provider!r}")
+        if self.search_provider not in ("you", "tavily", "exa"):
+            raise ValueError(f"search_provider must be 'you', 'tavily', or 'exa', got {self.search_provider!r}")
         return self
 
 
@@ -197,7 +197,7 @@ class JudgeEvaluation(BaseModel):
 
 class SearchProviderCallMetrics(BaseModel):
     function: str  # "search" | "browse"
-    provider: str = "tavily"  # "tavily" | "exa" | "you"
+    provider: str = "you"  # "you" | "tavily" | "exa"
     status: str
     start_time: float
     end_time: float
