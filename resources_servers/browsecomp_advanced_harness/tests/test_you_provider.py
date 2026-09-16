@@ -27,6 +27,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp import ClientResponseError
 from pytest import fixture
 
 import resources_servers.browsecomp_advanced_harness.app as app_module
@@ -193,6 +194,171 @@ class TestYouProvider:
         _, kwargs = mock.search.call_args
         assert kwargs.get("mode") == "eco"
 
+    # ---- YouAIOHTTPClient.search: exact wire payload per mode ----
+    # The tests above only assert the `mode` kwarg one layer above the client -- none
+    # of them exercise what actually goes over the wire. Assert it directly here.
+
+    async def test_you_client_snippets_payload(self, monkeypatch) -> None:
+        client = YouAIOHTTPClient(headers={}, base_url="https://ydc-index.io", debug=False)
+        fake_request = AsyncMock(return_value=self._http_response(200, {"results": {}}))
+        monkeypatch.setattr(app_module, "request", fake_request)
+
+        await client.search("q", num_results=5, mode="snippets", crawl_timeout=10)
+        kwargs = fake_request.call_args.kwargs
+        assert kwargs["url"] == "https://ydc-index.io/v1/search"
+        assert json.loads(kwargs["data"]) == {"query": "q", "count": 5}
+
+    async def test_you_client_highlights_payload(self, monkeypatch) -> None:
+        client = YouAIOHTTPClient(headers={}, base_url="https://ydc-index.io", debug=False)
+        fake_request = AsyncMock(return_value=self._http_response(200, {"results": {}}))
+        monkeypatch.setattr(app_module, "request", fake_request)
+
+        await client.search("q", num_results=5, mode="highlights", crawl_timeout=10)
+        kwargs = fake_request.call_args.kwargs
+        assert kwargs["url"] == "https://ydc-index.io/v1/search"
+        assert json.loads(kwargs["data"]) == {
+            "query": "q",
+            "count": 5,
+            "extraction": {"extraction_mode": "highlights"},
+        }
+
+    async def test_you_client_full_page_payload(self, monkeypatch) -> None:
+        client = YouAIOHTTPClient(headers={}, base_url="https://ydc-index.io", debug=False)
+        fake_request = AsyncMock(return_value=self._http_response(200, {"results": {}}))
+        monkeypatch.setattr(app_module, "request", fake_request)
+
+        await client.search("q", num_results=5, mode="full_page", crawl_timeout=42)
+        kwargs = fake_request.call_args.kwargs
+        assert kwargs["url"] == "https://ydc-index.io/v1/search"
+        assert json.loads(kwargs["data"]) == {
+            "query": "q",
+            "count": 5,
+            "extraction": {"extraction_mode": "full_page", "full_page": {"extraction_formats": ["markdown"]}},
+            "crawl_timeout": 42,
+        }
+
+    async def test_you_client_eco_payload_exact(self, monkeypatch) -> None:
+        client = YouAIOHTTPClient(headers={}, base_url="https://ydc-index.io", debug=False)
+        fake_request = AsyncMock(return_value=self._http_response(200, {"results": {}}))
+        monkeypatch.setattr(app_module, "request", fake_request)
+
+        await client.search(
+            "q", num_results=5, mode="eco", crawl_timeout=10, exclude_domains=["blacklisteddomain.com"]
+        )
+        kwargs = fake_request.call_args.kwargs
+        assert kwargs["url"] == "https://ydc-index.io/v1/eco_search"
+        # eco has no server-side exclude_domains support -- must not leak into the payload.
+        assert json.loads(kwargs["data"]) == {"query": "q", "count": 5}
+
+    async def test_you_client_lite_payload_exact(self, monkeypatch) -> None:
+        client = YouAIOHTTPClient(headers={}, base_url="https://ydc-index.io", debug=False)
+        fake_request = AsyncMock(return_value=self._http_response(200, {"results": []}))
+        monkeypatch.setattr(app_module, "request", fake_request)
+
+        await client.search(
+            "q", num_results=5, mode="lite", crawl_timeout=10, exclude_domains=["blacklisteddomain.com"]
+        )
+        kwargs = fake_request.call_args.kwargs
+        assert kwargs["url"] == "https://ydc-index.io/v2/search"
+        # lite has no server-side exclude_domains support -- must not leak into the payload.
+        assert json.loads(kwargs["data"]) == {"query": "q", "count": 5, "mode": "lite"}
+
+    # ---- error handling: bad request vs unexpected failure vs retry exhaustion ----
+
+    async def test_you_client_bad_request_raises_instead_of_returning_error_body(self, monkeypatch) -> None:
+        # Regression: a non-retryable, non-401/403 status (e.g. 400) used to be parsed
+        # and returned as if it were a results payload, silently zeroing every search
+        # in the run instead of surfacing the failure.
+        response = self._http_response(400, {"error": "bad query"})
+        response.ok = False
+        response.raise_for_status = MagicMock(
+            side_effect=ClientResponseError(request_info=MagicMock(), history=(), status=400, message="Bad Request")
+        )
+        fake_request = AsyncMock(return_value=response)
+        monkeypatch.setattr(app_module, "request", fake_request)
+        client = YouAIOHTTPClient(headers={}, base_url="https://ydc-index.io", debug=False)
+
+        with pytest.raises(ClientResponseError):
+            await client.search("q", num_results=5, mode="snippets", crawl_timeout=10)
+        fake_request.assert_awaited_once()  # not retried -- 400 isn't in RETRY_ERROR_CODES
+
+    async def test_you_client_retry_exhaustion_raises_not_none(self, monkeypatch) -> None:
+        # Regression: falling off the end of the retry loop implicitly returned None,
+        # which callers then `.get()`-ed, crashing with AttributeError instead of a
+        # clear failure.
+        response = self._http_response(500, {"error": "boom"})
+        response.ok = False
+        response.raise_for_status = MagicMock(
+            side_effect=ClientResponseError(
+                request_info=MagicMock(), history=(), status=500, message="Internal Server Error"
+            )
+        )
+        fake_request = AsyncMock(return_value=response)
+        monkeypatch.setattr(app_module, "request", fake_request)
+        monkeypatch.setattr(app_module, "sleep", AsyncMock())
+        client = YouAIOHTTPClient(headers={}, base_url="https://ydc-index.io", debug=False)
+
+        with pytest.raises(ClientResponseError):
+            await client.search("q", num_results=5, mode="snippets", crawl_timeout=10)
+
+    async def test_you_search_bad_request_returns_soft_message(self, server: YouSearchResourcesServer) -> None:
+        mock = MagicMock()
+        mock.search = AsyncMock(
+            side_effect=ClientResponseError(request_info=MagicMock(), history=(), status=400, message="Bad Request")
+        )
+        server._you_clients = [mock]
+
+        resp = await server.search(self._req(), SearchRequest(queries=["q"]))
+        assert "Search failed" in resp.results_string
+
+    async def test_you_search_unexpected_error_propagates(self, server: YouSearchResourcesServer) -> None:
+        # Regression: parity with Tavily inline search -- an unexpected failure (not a
+        # provider bad-request) should fail the run loudly rather than degrade to a
+        # soft "Search failed" message with nonzero reward.
+        mock = MagicMock()
+        mock.search = AsyncMock(side_effect=RuntimeError("systemic outage"))
+        server._you_clients = [mock]
+
+        with pytest.raises(RuntimeError):
+            await server.search(self._req(), SearchRequest(queries=["q"]))
+
+    async def test_you_search_to_disk_unexpected_error_propagates(self, tmp_path) -> None:
+        server = self._you_server_per_session(str(tmp_path))
+        mock = MagicMock()
+        mock.search = AsyncMock(side_effect=RuntimeError("systemic outage"))
+        server._you_clients = [mock]
+        server._get_page_writer("test_session_id")
+
+        with pytest.raises(RuntimeError):
+            await server.search(self._req(), SearchRequest(queries=["q"]))
+
+    # ---- inline search: per-result content cap (full_page) ----
+
+    async def test_you_search_full_page_oversized_result_is_truncated_not_dropped(
+        self, server: YouSearchResourcesServer
+    ) -> None:
+        # Regression: full_page mode returns contents.markdown for the whole page, which
+        # can exceed the entire per-query budget on its own. Without a per-result cap the
+        # budget check breaks on the first result and the tool silently returns zero
+        # results -- no error, no truncation notice.
+        mock = MagicMock()
+        mock.search = AsyncMock(
+            return_value={
+                "results": {
+                    "web": [
+                        {"title": "Huge", "url": "https://x.com", "contents": {"markdown": "z" * 20000}},
+                        {"title": "Second", "url": "https://y.com", "snippets": ["small"]},
+                    ]
+                }
+            }
+        )
+        server._you_clients = [mock]
+
+        resp = await server.search(self._req(), SearchRequest(queries=["q"], max_total_length=30000))
+        assert "[Title]: Huge" in resp.results_string
+        assert "... [truncated]" in resp.results_string
+        assert "[Title]: Second" in resp.results_string
+
     async def test_you_eco_still_filters_excluded_domains_client_side(self) -> None:
         server = self._config_server(you_search_mode="eco")
         mock = MagicMock()
@@ -246,6 +412,45 @@ class TestYouProvider:
         pages = list((Path(tmp_path) / "test_session_id" / "pages").iterdir())
         assert len(pages) == 1
         assert "[Saved to]:" in resp.results_string
+        # The saved page must actually contain the retrieved body, not just exist.
+        assert "hl" in pages[0].read_text()
+
+    async def test_you_search_to_disk_query_too_long(self, tmp_path) -> None:
+        server = self._you_server_per_session(str(tmp_path))
+        mock = MagicMock()
+        mock.search = AsyncMock(return_value={"results": {"web": []}})
+        server._you_clients = [mock]
+        server._get_page_writer("test_session_id")
+
+        resp = await server.search(self._req(), SearchRequest(queries=["q" * 401]))
+        assert "too long" in resp.results_string
+        mock.search.assert_not_called()
+
+    async def test_you_search_to_disk_does_not_orphan_page_on_budget_break(self, tmp_path) -> None:
+        # Regression: the page file + manifest row used to be written before the budget
+        # check, so a result that didn't fit still landed on disk with no [Saved to]
+        # line ever shown to the model -- an orphan file only discoverable via `ls`.
+        server = self._you_server_per_session(str(tmp_path))
+        mock = MagicMock()
+        mock.search = AsyncMock(
+            return_value={
+                "results": {
+                    "web": [
+                        {"title": "Fits", "url": "https://x.com", "snippets": ["small"]},
+                        {"title": "TooBig", "url": "https://y.com", "snippets": ["z" * 500]},
+                    ]
+                }
+            }
+        )
+        server._you_clients = [mock]
+        server._get_page_writer("test_session_id")
+
+        resp = await server.search(self._req(), SearchRequest(queries=["q"], max_total_length=100))
+        pages = list((Path(tmp_path) / "test_session_id" / "pages").iterdir())
+        assert "TooBig" not in resp.results_string
+        # No page was written for the result that never appeared in the response.
+        assert len(pages) == 1
+        assert "small" in pages[0].read_text()
 
     # ---- browse ----
 

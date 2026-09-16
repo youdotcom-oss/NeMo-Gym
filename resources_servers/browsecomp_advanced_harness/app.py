@@ -27,6 +27,7 @@ from time import time
 from typing import Any, ClassVar, Dict, List, Literal, Optional
 from urllib.parse import urlparse
 
+from aiohttp import ClientResponseError
 from fastapi import FastAPI, Request
 from httpx import AsyncClient
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
@@ -61,7 +62,7 @@ class BrowseCompResourcesServerConfig(BaseResourcesServerConfig):
     # Search/browse backend. "tavily" (default), "exa", or "you". The chosen
     # provider's key must be present (validated below). exclude_domains are
     # honored by all three.
-    search_provider: str = "tavily"
+    search_provider: str = "you"
     tavily_api_key: str | List[str] | None = None
     exa_api_key: str | List[str] | None = None
     ydc_api_key: str | List[str] | None = None
@@ -69,8 +70,8 @@ class BrowseCompResourcesServerConfig(BaseResourcesServerConfig):
     # /v1/eco_search endpoint and "lite" hits /v2/search instead (both: query + count
     # only, no extraction, no exclude_domains support server-side). Only used when
     # search_provider="you" -- browse always pulls full markdown via /v1/contents.
-    you_search_mode: YouSearchMode = "snippets"
-    you_crawl_timeout: int = 10
+    you_search_mode: YouSearchMode = "highlights"
+    you_crawl_timeout: int = 60
     exclude_domains_file_path: str
     use_judge: bool = True  # If False, use regex matching instead of LLM judge
     judge_model_server: Optional[ModelServerRef] = None
@@ -458,12 +459,20 @@ class YouAIOHTTPClient(BaseModel):
                 await sleep(0.5)
                 continue
 
+            if not response.ok:
+                # Don't return the error body as if it were results -- that turns a
+                # misconfigured key or bad request into a full run of silent
+                # zero-reward "No results found."
+                await raise_for_status(response)
+
             data = await response.json()
             if self.debug:
                 print(f"Received the following You.com response: status={response.status}")
             return data
 
+        # Retry budget exhausted while still holding a retryable status.
         await raise_for_status(response)
+        raise RuntimeError(f"You.com request to {endpoint} failed after {tries} tries with no response to return")
 
     async def search(
         self,
@@ -473,10 +482,13 @@ class YouAIOHTTPClient(BaseModel):
         crawl_timeout: int,
         exclude_domains: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        # eco is a separate, lighter endpoint rather than an extraction level: query
-        # and count only, no extraction, no exclude_domains support server-side.
+        # eco and lite are separate, lighter endpoints rather than extraction levels:
+        # query and count only, no extraction, no exclude_domains support server-side
+        # (client-side exclusion in _is_url_excluded covers both).
         if mode == "eco":
             return await self._post("/v1/eco_search", {"query": query, "count": num_results})
+        if mode == "lite":
+            return await self._post("/v2/search", {"query": query, "count": num_results, "mode": "lite"})
 
         body: Dict[str, Any] = {"query": query, "count": num_results}
         if mode == "highlights":
@@ -487,9 +499,6 @@ class YouAIOHTTPClient(BaseModel):
                 "full_page": {"extraction_formats": ["markdown"]},
             }
             body["crawl_timeout"] = crawl_timeout
-        if mode == "lite":
-            payload = {"query": query, "count": num_results, "mode": "lite"}
-            return await self._post("/v2/search", payload)
         if exclude_domains:
             body["exclude_domains"] = list(exclude_domains)[:MAX_YOU_EXCLUDE_DOMAINS]
         return await self._post("/v1/search", body)
@@ -1574,15 +1583,22 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         try:
             results = await client.search(
                 query,
-                num_results=self.config.max_results,
+                num_results=5,
                 mode=self.config.you_search_mode,
                 crawl_timeout=self.config.you_crawl_timeout,
                 exclude_domains=self._exclude_domains,
             )
+        except ClientResponseError as e:
+            self._record_call(metrics, "search", "you", "error", call_start)
+            print(f"[browsecomp][tool_fail][you_search_bad_request] query={query[:200]!r} error={e}", flush=True)
+            return f"Search failed: {e}"
         except Exception as e:
             self._record_call(metrics, "search", "you", "error", call_start)
-            print(f"[browsecomp][tool_fail][you_search] query={query[:200]!r} error={e}", flush=True)
-            return f"Search failed: {e}"
+            print(
+                f"[browsecomp][tool_fail][you_search] query={query[:200]!r} error_type={type(e).__name__} error={e}",
+                flush=True,
+            )
+            raise
         self._record_call(metrics, "search", "you", "success", call_start)
 
         blocks = [f"[Search Query]: {query}"]
@@ -1593,6 +1609,11 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
                 continue
             title = result.get("title", "") or ""
             snippet = self._you_result_body(result)
+            # cap per-result content: without this, a single full_page markdown body can
+            # exceed max_length on its own and the loop breaks on iteration 1, returning
+            # zero results with no error and no truncation notice.
+            if len(snippet) > 5000:
+                snippet = snippet[:5000] + "\n... [truncated]"
             entry = f"[Title]: {title}\n[URL]: {url}\n[Snippet]: {snippet}\n"
             if running_len + len(entry) > max_length:
                 break
@@ -1604,21 +1625,31 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         self, query: str, page_writer: "_PageWriter", max_per_query: int, metrics: "SearchMetrics"
     ) -> str:
         """Terminal mode: run one You.com search, write each result's body to disk, return
-        title/url/snippet/[Saved to] metadata. Mirrors the other providers' disk-mode formatting."""
+        title/url/content/[Saved to] metadata. Mirrors the other providers' disk-mode formatting."""
+        if len(query) > 400:
+            return "Query is too long, use a maximum of 400 characters and 50 words."
+
         client = self._select_you_client()
         call_start = time()
         try:
             results = await client.search(
                 query,
-                num_results=self.config.max_results,
+                num_results=10,  # ponytail: you.com-only override, bump config.max_results if other providers need it too
                 mode=self.config.you_search_mode,
                 crawl_timeout=self.config.you_crawl_timeout,
                 exclude_domains=self._exclude_domains,
             )
+        except ClientResponseError as e:
+            self._record_call(metrics, "search", "you", "error", call_start)
+            print(f"[browsecomp][tool_fail][you_search_bad_request] query={query[:200]!r} error={e}", flush=True)
+            return f"Search failed: {e}"
         except Exception as e:
             self._record_call(metrics, "search", "you", "error", call_start)
-            print(f"[browsecomp][tool_fail][you_search] query={query[:200]!r} error={e}", flush=True)
-            return f"Search failed: {e}"
+            print(
+                f"[browsecomp][tool_fail][you_search] query={query[:200]!r} error_type={type(e).__name__} error={e}",
+                flush=True,
+            )
+            raise
         self._record_call(metrics, "search", "you", "success", call_start)
 
         blocks = [f"[Search Query]: {query}"]
@@ -1629,16 +1660,19 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
                 continue
             title = result.get("title", "") or ""
             body = self._you_result_body(result)
-            snippet = body[:500]
+            search_content = body[:500]
+            saved_line = ""
+            entry = f"[Title]: {title}\n[URL]: {url}\n[content]: {search_content}\n{saved_line}"
+            if running_len + len(entry) > max_per_query:
+                break
             if body:
+                # write to disk only once the entry is known to fit -- otherwise a
+                # page lands in pages/ and manifest.tsv with no [Saved to] line ever
+                # shown to the model, orphaning the file.
                 content = body if len(body) <= self.config.max_page_bytes else body[: self.config.max_page_bytes]
                 saved = page_writer.write_search_result(query, ri, title, url, content)
                 saved_line = f"[Saved to]: {saved} ({len(content)} bytes)\n"
-            else:
-                saved_line = ""
-            entry = f"[Title]: {title}\n[URL]: {url}\n[Snippet]: {snippet}\n{saved_line}"
-            if running_len + len(entry) > max_per_query:
-                break
+                entry = f"[Title]: {title}\n[URL]: {url}\n[Snippet]: {search_content}\n{saved_line}"
             blocks.append(entry)
             running_len += len(entry)
         return "\n".join(blocks)
