@@ -38,7 +38,7 @@ from resources_servers.browsecomp_advanced_harness.app import (
     ExaAIOHTTPClient,
     TavilySearchRequest,
     TavilySearchResourcesServer,
-    TavilySearchResourcesServerConfig,
+    BrowseCompResourcesServerConfig,
 )
 
 
@@ -46,7 +46,7 @@ _TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 _DUMMY_EXCLUDE_DOMAINS_FILE = os.path.join(_TEST_DIR, "dummy_exclude_domains_file.json")
 
 
-def _exa_config(**overrides) -> TavilySearchResourcesServerConfig:
+def _exa_config(**overrides) -> BrowseCompResourcesServerConfig:
     kwargs = dict(
         host="0.0.0.0",
         port=8080,
@@ -57,7 +57,7 @@ def _exa_config(**overrides) -> TavilySearchResourcesServerConfig:
         exclude_domains_file_path=_DUMMY_EXCLUDE_DOMAINS_FILE,
     )
     kwargs.update(overrides)
-    return TavilySearchResourcesServerConfig(**kwargs)
+    return BrowseCompResourcesServerConfig(**kwargs)
 
 
 def _exa_server(**overrides) -> TavilySearchResourcesServer:

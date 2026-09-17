@@ -41,7 +41,7 @@ from nemo_gym.server_utils import SESSION_ID_KEY, ServerClient
 from resources_servers.browsecomp_advanced_harness.app import (
     TavilySearchRequest,
     TavilySearchResourcesServer,
-    TavilySearchResourcesServerConfig,
+    BrowseCompResourcesServerConfig,
 )
 
 
@@ -63,7 +63,7 @@ class TestExaSearchPages:
         extra = {}
         if ws_root is not None:
             extra = {"workspace": "per_session", "workspace_root": ws_root}
-        config = TavilySearchResourcesServerConfig(
+        config = BrowseCompResourcesServerConfig(
             host="0.0.0.0",
             port=8080,
             entrypoint="",

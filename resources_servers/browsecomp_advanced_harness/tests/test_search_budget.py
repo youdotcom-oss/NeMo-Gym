@@ -34,7 +34,7 @@ from nemo_gym.server_utils import SESSION_ID_KEY, ServerClient
 from resources_servers.browsecomp_advanced_harness.app import (
     TavilySearchRequest,
     TavilySearchResourcesServer,
-    TavilySearchResourcesServerConfig,
+    BrowseCompResourcesServerConfig,
 )
 
 
@@ -44,7 +44,7 @@ _DUMMY_EXCLUDE_DOMAINS_FILE = os.path.join(_TEST_DIR, "dummy_exclude_domains_fil
 
 class TestSearchBudget:
     def _server(self, **overrides) -> TavilySearchResourcesServer:
-        config = TavilySearchResourcesServerConfig(
+        config = BrowseCompResourcesServerConfig(
             host="0.0.0.0",
             port=8080,
             entrypoint="",

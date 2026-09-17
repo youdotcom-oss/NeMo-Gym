@@ -59,13 +59,6 @@ from resources_servers.browsecomp_advanced_harness.judge_prompt import JUDGE_PRO
 
 YouSearchMode = Literal["snippets", "highlights", "full_page", "eco", "lite"]
 
-
-class BrowseCompResourcesServerConfig(BaseResourcesServerConfig):
-    # Search/browse backend. "tavily" (default), "exa", or "you". The chosen
-    # provider's key must be present (validated below). exclude_domains are
-    # honored by all three.
-    search_provider: str = "you"
-
 # Exa /search "type" values. The deep variants run Exa's multi-step research path:
 # they also return a per-result `summary` and, when an outputSchema is supplied, a
 # top-level `output.content` synthesis — so the deep request asks for both.
@@ -80,10 +73,11 @@ _EXA_SEARCH_TYPES = ("instant", "fast", "auto") + _EXA_DEEP_TYPES
 _EXA_DEEP_ANSWER_MAX_FRACTION = 0.5
 
 
-class TavilySearchResourcesServerConfig(BaseResourcesServerConfig):
-    # Search/browse backend. "tavily" (default) or "exa". The chosen provider's
-    # key must be present (validated below). exclude_domains are honored by both.
-    search_provider: str = "tavily"
+class BrowseCompResourcesServerConfig(BaseResourcesServerConfig):
+    # Search/browse backend. "you" (default), "tavily", or "exa". The chosen
+    # provider's key must be present (validated below). exclude_domains are
+    # honored by all three.
+    search_provider: str = "you"
     tavily_api_key: str | List[str] | None = None
     exa_api_key: str | List[str] | None = None
     ydc_api_key: str | List[str] | None = None
@@ -146,7 +140,6 @@ class TavilySearchResourcesServerConfig(BaseResourcesServerConfig):
             raise ValueError("tavily_api_key is required when search_provider='tavily'")
         if self.search_provider == "exa" and not self.exa_api_key:
             raise ValueError("exa_api_key is required when search_provider='exa'")
-
         if self.search_provider not in ("you", "tavily", "exa"):
             raise ValueError(f"search_provider must be 'you', 'tavily', or 'exa', got {self.search_provider!r}")
         if self.exa_search_type not in _EXA_SEARCH_TYPES:
@@ -310,7 +303,6 @@ def _count_provider_retry(status: int) -> None:
     counts["num_429_retries" if status == 429 else "num_other_retries"] += 1
 
 
-def _sum_provider_retry_counts(metrics: "SearchMetrics") -> tuple:
 # ---- benchmark-contamination guard -----------------------------------------
 #
 # A provider result that quotes the benchmark itself -- a dataset mirror, a
@@ -410,7 +402,7 @@ def _filter_results(result_list: List[dict], fn: str, provider: str) -> tuple[Li
     return kept, dropped
 
 
-def _sum_provider_retry_counts(metrics: "TavilySearchMetrics") -> tuple:
+def _sum_provider_retry_counts(metrics: "SearchMetrics") -> tuple:
     """(total true 429s, total other retried statuses) across a session's calls."""
     n429 = sum(c.num_429_retries for c in metrics.async_search_provider_calls)
     n_other = sum(c.num_other_retries for c in metrics.async_search_provider_calls)
@@ -1217,10 +1209,9 @@ class TavilySearchResourcesServer(SimpleResourcesServer):
         self._num_requests += 1
         return client
 
-    def _record_call(self, metrics: "SearchMetrics", function: str, provider: str, status: str, start: float) -> None:
     def _record_call(
         self,
-        metrics: "TavilySearchMetrics",
+        metrics: "SearchMetrics",
         function: str,
         provider: str,
         status: str,
@@ -1242,8 +1233,8 @@ class TavilySearchResourcesServer(SimpleResourcesServer):
             if num_results_offered is not None and num_results_returned is not None
             else None
         )
-        metrics.async_tavily_calls.append(
-            TavilySearchSingleAsyncTavilyMetrics(
+        metrics.async_search_provider_calls.append(
+            SearchProviderCallMetrics(
                 function=function,
                 provider=provider,
                 status=status,
@@ -1259,7 +1250,7 @@ class TavilySearchResourcesServer(SimpleResourcesServer):
         )
 
     async def _exa_search_one(
-        self, query: str, max_length: int, metrics: "TavilySearchMetrics", page_writer: Optional["_PageWriter"] = None
+        self, query: str, max_length: int, metrics: "SearchMetrics", page_writer: Optional["_PageWriter"] = None
     ) -> str:
         """Exa search: highlight snippets returned INLINE. Mirrors the reference Exa
         harness formatting exactly.
@@ -1988,7 +1979,8 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         if body.queries is None or len(body.queries) == 0:
             return SearchResponse(results_string="Query is none or empty")
 
-        max_per_query_length = body.max_total_length // len(body.queries)
+        max_total_length = body.max_total_length if body.max_total_length is not None else self.config.search_max_total_length
+        max_per_query_length = max_total_length // len(body.queries)
         page_writer = self._get_page_writer(sid)
         if page_writer is not None:
             results = await asyncio.gather(

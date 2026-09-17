@@ -31,7 +31,7 @@
 # msg_extraction_failure is empty on purpose; Gym's default sentinel would
 # otherwise reach the judge as the model's answer.
 
-# Used judge: gpt-4o (wired as judge_model in env.yaml)
+# Used judge: gpt-4o (wired as hle_judge_model in env.yaml)
 
 JUDGE=hle_equivalence_llm_judge_resources_server.resources_servers.equivalence_llm_judge
 JPARAMS=equivalence_llm_judge.resources_servers.equivalence_llm_judge.judge_responses_create_params
@@ -57,7 +57,7 @@ gym eval run \
   --split benchmark \
   ${RESUME:+--resume} \
   --output "${OUT:-./results/hle}/evaluator_rollouts.jsonl" \
-  "++$JUDGE.judge_model_server.name=judge_model" \
+  "++$JUDGE.judge_model_server.name=hle_judge_model" \
   "++$JUDGE.judge_equal_label=HLE_JUDGE_CORRECT" \
   "++$JUDGE.judge_not_equal_label=HLE_JUDGE_INCORRECT" \
   "++$JUDGE.response_extract_regex='(?s)\A(?:(.{1,8192})\Z|(?=.{8193,}\Z))'" \

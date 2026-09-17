@@ -34,7 +34,7 @@ from nemo_gym.server_utils import SESSION_ID_KEY, ServerClient
 from resources_servers.browsecomp_advanced_harness.app import (
     TavilySearchRequest,
     TavilySearchResourcesServer,
-    TavilySearchResourcesServerConfig,
+    BrowseCompResourcesServerConfig,
 )
 
 
@@ -48,7 +48,7 @@ def _result(title: str, highlight: str) -> dict:
 
 class TestSearchYieldMetrics:
     def _server(self, **overrides) -> TavilySearchResourcesServer:
-        config = TavilySearchResourcesServerConfig(
+        config = BrowseCompResourcesServerConfig(
             host="0.0.0.0",
             port=8080,
             entrypoint="",

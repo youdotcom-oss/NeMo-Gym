@@ -52,7 +52,7 @@ from resources_servers.browsecomp_advanced_harness.app import (
     BrowseRequest,
     TavilySearchRequest,
     TavilySearchResourcesServer,
-    TavilySearchResourcesServerConfig,
+    BrowseCompResourcesServerConfig,
     _drop_contaminated,
     _is_contaminated,
     _is_contaminated_url,
@@ -114,7 +114,7 @@ def _server(provider: str, workspace_root: str = None) -> TavilySearchResourcesS
     if workspace_root is not None:
         kwargs["workspace"] = "per_session"
         kwargs["workspace_root"] = workspace_root
-    config = TavilySearchResourcesServerConfig(**kwargs)
+    config = BrowseCompResourcesServerConfig(**kwargs)
     return TavilySearchResourcesServer(config=config, server_client=MagicMock(spec=ServerClient))
 
 

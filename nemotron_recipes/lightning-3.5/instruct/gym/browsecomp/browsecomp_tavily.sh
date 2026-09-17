@@ -42,8 +42,7 @@ EXCLUDE_JSON="${EXCLUDE_JSON:-$HERE/exclude_domains.json}"
 QWEN=Qwen3-235B-A22B-Instruct-2507-FP8.responses_api_models.vllm_model
 HARNESS=browsecomp_benchmark_resources_server.resources_servers.browsecomp_advanced_harness
 AGENT=browsecomp_benchmark_agent.responses_api_agents.browsecomp_agent
-# The agent runs on this derived node, not policy_model, so thinking is set here.
-POLICY=policy_model_no_interleaved_reasoning.responses_api_models.vllm_model
+POLICY=policy_model.responses_api_models.vllm_model
 
 # prepare has no --model-type flag, so vllm_model.yaml is composed via --config.
 # Pin Gym to the commit the tech report numbers were produced with. Set PIN_GYM=0 to
@@ -75,6 +74,7 @@ gym eval run \
   "++$AGENT.save_model_call_using_vllm_tokenize_endpoint=false" \
   "++$POLICY.chat_template_kwargs={enable_thinking: true}" \
   "++$POLICY.extra_body={skip_special_tokens: false}" \
+  "++$POLICY.uses_interleaved_reasoning=false" \
   ${OPENAI_PROJECT:+"++policy_model.responses_api_models.vllm_model.default_headers={OpenAI-Project:$OPENAI_PROJECT}"} \
   "++overwrite_metrics_conflicts=true" \
   ${LIMIT:+--limit "$LIMIT"} \
