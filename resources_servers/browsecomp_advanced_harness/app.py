@@ -103,8 +103,31 @@ class BrowseCompResourcesServerConfig(BaseResourcesServerConfig):
         return self
 
 
+def _coerce_str_list(value: Any) -> Any:
+    """Tolerate the ways a model mangles a "list of strings" tool argument: a
+    JSON-encoded string, a bare string, or a nested list."""
+    if value is None:
+        return value
+
+    # Case 1: JSON-encoded string → parse it
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            value = [value]
+
+    # Case 2: nested list e.g. [["a", "b"]] → flatten one level
+    if isinstance(value, list) and value and isinstance(value[0], list):
+        value = [v for sublist in value for v in sublist if isinstance(v, str)]
+
+    return value
+
+
 class SearchRequest(BaseModel):
     queries: Optional[List[str]] = None  # Make optional to handle missing args gracefully
+    # You.com only: domains to restrict results to (see YouSearchResourcesServer). Ignored
+    # by the tavily/exa providers.
+    include_domains: Optional[List[str]] = None
     max_total_length: int = 30000
 
     @model_validator(mode="before")
@@ -112,23 +135,14 @@ class SearchRequest(BaseModel):
     def coerce_queries(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
-        queries = data.get("queries")
-        if queries is None:
+        if data.get("queries") is None and data.get("include_domains") is None:
             return data
 
-        # Case 1: JSON-encoded string → parse it
-        if isinstance(queries, str):
-            try:
-                queries = json.loads(queries)
-            except (json.JSONDecodeError, ValueError):
-                queries = [queries]
-
-        # Case 2: nested list e.g. [["q1", "q2"]] → flatten one level
-        if isinstance(queries, list) and queries and isinstance(queries[0], list):
-            queries = [q for sublist in queries for q in sublist if isinstance(q, str)]
-
         data = dict(data)
-        data["queries"] = queries
+        if data.get("queries") is not None:
+            data["queries"] = _coerce_str_list(data["queries"])
+        if data.get("include_domains") is not None:
+            data["include_domains"] = _coerce_str_list(data["include_domains"])
         return data
 
 
@@ -480,10 +494,11 @@ class YouAIOHTTPClient(BaseModel):
         mode: YouSearchMode,
         crawl_timeout: int,
         exclude_domains: Optional[List[str]] = None,
+        include_domains: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         # eco and lite are separate, lighter endpoints rather than extraction levels:
-        # query and count only, no extraction, no exclude_domains support server-side
-        # (client-side exclusion in _is_url_excluded covers both).
+        # query and count only, no extraction, no include/exclude_domains support
+        # server-side (client-side filtering in _is_url_excluded/_is_url_included covers both).
         if mode == "eco":
             return await self._post("/v1/eco_search", {"query": query, "count": num_results})
         if mode == "lite":
@@ -498,7 +513,10 @@ class YouAIOHTTPClient(BaseModel):
                 "full_page": {"extraction_formats": ["markdown"]},
             }
             body["crawl_timeout"] = crawl_timeout
-        if exclude_domains:
+        # You.com rejects include_domains and exclude_domains together; include wins.
+        if include_domains:
+            body["include_domains"] = list(include_domains)[: self.MAX_EXCLUDE_DOMAINS]
+        elif exclude_domains:
             body["exclude_domains"] = list(exclude_domains)[: self.MAX_EXCLUDE_DOMAINS]
         return await self._post("/v1/search", body)
 
@@ -507,6 +525,36 @@ class YouAIOHTTPClient(BaseModel):
         return await self._post(
             "/v1/contents", {"urls": list(urls), "formats": ["markdown"], "crawl_timeout": crawl_timeout}
         )
+
+
+# ---------------------------------------------------------------------------
+# Domain filters: normalize registry/model-supplied domains, and rewrite a
+# `site:`/`-site:` operator the model puts in the query text (You.com's search
+# ignores it) into the include/exclude_domains fields it actually honors.
+# ---------------------------------------------------------------------------
+_SITE_OPERATOR_RE = re.compile(r"(-?)site:(\S+)")
+
+
+def _normalize_domain(domain: str) -> str:
+    """Canonical form for comparing domains: lower, strip scheme/path/whitespace/trailing dot/www."""
+    domain = domain.strip().lower().rstrip(".")
+    domain = re.sub(r"^[a-z]+://", "", domain).split("/", 1)[0]
+    return domain[4:] if domain.startswith("www.") else domain
+
+
+def _extract_site_filters(query: str) -> tuple[str, List[str], List[str]]:
+    """Strip `site:`/`-site:` tokens out of a query, returning the cleaned query text
+    plus the normalized domains found for each."""
+    include: List[str] = []
+    exclude: List[str] = []
+
+    def _consume(m: re.Match) -> str:
+        (exclude if m.group(1) else include).append(_normalize_domain(m.group(2)))
+        return ""
+
+    clean_query = _SITE_OPERATOR_RE.sub(_consume, query)
+    clean_query = re.sub(r"\s+", " ", clean_query).strip()
+    return clean_query, include, exclude
 
 
 # ---------------------------------------------------------------------------
@@ -1325,6 +1373,24 @@ class TavilySearchResourcesServer(SimpleResourcesServer):
         hostname = urlparse(url).hostname or ""
         return any(hostname == domain or hostname.endswith("." + domain) for domain in self._exclude_domains)
 
+    @staticmethod
+    def _is_url_included(url: str, include_domains: List[str]) -> bool:
+        """True when include_domains is empty (no restriction) or the URL's domain matches one."""
+        if not include_domains:
+            return True
+        hostname = urlparse(url).hostname or ""
+        return any(hostname == domain or hostname.endswith("." + domain) for domain in include_domains)
+
+    def _overlapping_excludes(self, include_domains: List[str]) -> List[str]:
+        """Domains in include_domains that conflict with the server-wide exclude registry
+        (equal, or one is a subdomain of the other -- either way the request can only
+        return nothing)."""
+        return [
+            d
+            for d in include_domains
+            if any(d == e or d.endswith("." + e) or e.endswith("." + d) for e in self._exclude_domains)
+        ]
+
     def _postprocess_search_results(self, query: str, results: dict, max_length: int) -> str:
         blocks = [f"[Search Query]: {query}"]
         running_len = len(blocks[0])
@@ -1354,7 +1420,7 @@ class TavilySearchResourcesServer(SimpleResourcesServer):
         for notice in notices:
             for prop in notice["properties"]:
                 if prop.get("type") == "domain":
-                    exclude_domains.append(prop["value"])
+                    exclude_domains.append(_normalize_domain(prop["value"]))
         return exclude_domains
 
     async def _call_judge(
@@ -1573,19 +1639,53 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         snippets = result.get("snippets") or []
         return " ... ".join(s for s in snippets if s) or (result.get("description") or "")
 
-    async def _you_search_one(self, query: str, max_length: int, metrics: "SearchMetrics") -> str:
+    def _resolve_you_query_filters(
+        self, query: str, include_domains: Optional[List[str]]
+    ) -> tuple[str, List[str], List[str], Optional[str]]:
+        """Merge call-level include_domains with any `site:`/`-site:` tokens in the query
+        text, and validate against the server-wide exclude registry. Returns
+        (clean_query, include, exclude, error) -- error is set (and the other fields
+        meaningless) when the request can't be satisfied."""
+        clean_query, site_include, site_exclude = _extract_site_filters(query)
+        include = list(dict.fromkeys((include_domains or []) + site_include))
+
+        if include and site_exclude:
+            return (
+                clean_query,
+                [],
+                [],
+                (
+                    f"Cannot combine include_domains {include} with -site:{site_exclude[0]} -- "
+                    "You.com does not support include and exclude domains together."
+                ),
+            )
+        if include:
+            overlap = self._overlapping_excludes(include)
+            if overlap:
+                return clean_query, [], [], (f"include_domains {include} conflict with blocked domain(s) {overlap}.")
+            return clean_query, include, [], None
+        return clean_query, [], self._exclude_domains + site_exclude, None
+
+    async def _you_search_one(
+        self, query: str, max_length: int, metrics: "SearchMetrics", include_domains: Optional[List[str]] = None
+    ) -> str:
         if len(query) > 400:
             return "Query is too long, use a maximum of 400 characters and 50 words."
+
+        clean_query, include, exclude, error = self._resolve_you_query_filters(query, include_domains)
+        if error:
+            return f"[Search Query]: {query}\nError: {error}"
 
         client = self._select_you_client()
         call_start = time()
         try:
             results = await client.search(
-                query,
+                clean_query,
                 num_results=self.config.max_results,
                 mode=self.config.you_search_mode,
                 crawl_timeout=self.config.you_crawl_timeout,
-                exclude_domains=self._exclude_domains,
+                exclude_domains=exclude,
+                include_domains=include,
             )
         except ClientResponseError as e:
             self._record_call(metrics, "search", "you", "error", call_start)
@@ -1606,6 +1706,8 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
             url = result.get("url", "") or ""
             if self._is_url_excluded(url):  # eco / API-side exclusion doesn't apply; enforce client-side
                 continue
+            if not self._is_url_included(url, include):  # eco / API-side inclusion doesn't apply either
+                continue
             title = result.get("title", "") or ""
             snippet = self._you_result_body(result)
             # cap per-result content: without this, a single full_page markdown body can
@@ -1621,22 +1723,32 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         return "\n".join(blocks)
 
     async def _you_search_one_to_disk(
-        self, query: str, page_writer: "_PageWriter", max_per_query: int, metrics: "SearchMetrics"
+        self,
+        query: str,
+        page_writer: "_PageWriter",
+        max_per_query: int,
+        metrics: "SearchMetrics",
+        include_domains: Optional[List[str]] = None,
     ) -> str:
         """Terminal mode: run one You.com search, write each result's body to disk, return
         title/url/content/[Saved to] metadata. Mirrors the other providers' disk-mode formatting."""
         if len(query) > 400:
             return "Query is too long, use a maximum of 400 characters and 50 words."
 
+        clean_query, include, exclude, error = self._resolve_you_query_filters(query, include_domains)
+        if error:
+            return f"[Search Query]: {query}\nError: {error}"
+
         client = self._select_you_client()
         call_start = time()
         try:
             results = await client.search(
-                query,
+                clean_query,
                 num_results=self.config.max_results,
                 mode=self.config.you_search_mode,
                 crawl_timeout=self.config.you_crawl_timeout,
-                exclude_domains=self._exclude_domains,
+                exclude_domains=exclude,
+                include_domains=include,
             )
         except ClientResponseError as e:
             self._record_call(metrics, "search", "you", "error", call_start)
@@ -1656,6 +1768,8 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         for ri, result in enumerate(self._you_result_items(results), start=1):
             url = result.get("url", "") or ""
             if self._is_url_excluded(url):
+                continue
+            if not self._is_url_included(url, include):
                 continue
             title = result.get("title", "") or ""
             body = self._you_result_body(result)
@@ -1686,15 +1800,25 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         if body.queries is None or len(body.queries) == 0:
             return SearchResponse(results_string="Query is none or empty")
 
+        include_domains = [_normalize_domain(d) for d in (body.include_domains or [])]
+        overlap = self._overlapping_excludes(include_domains)
+        if overlap:
+            return SearchResponse(
+                results_string=f"Error: include_domains {include_domains} conflict with blocked domain(s) {overlap}."
+            )
+
         max_per_query_length = body.max_total_length // len(body.queries)
         page_writer = self._get_page_writer(sid)
         if page_writer is not None:
             results = await asyncio.gather(
-                *[self._you_search_one_to_disk(q, page_writer, max_per_query_length, metrics) for q in body.queries]
+                *[
+                    self._you_search_one_to_disk(q, page_writer, max_per_query_length, metrics, include_domains)
+                    for q in body.queries
+                ]
             )
         else:
             results = await asyncio.gather(
-                *[self._you_search_one(q, max_per_query_length, metrics) for q in body.queries]
+                *[self._you_search_one(q, max_per_query_length, metrics, include_domains) for q in body.queries]
             )
 
         return SearchResponse(results_string="\n\n".join(results))

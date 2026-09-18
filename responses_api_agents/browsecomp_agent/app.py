@@ -118,6 +118,32 @@ PROGRESS_SYSTEM_ADDENDUM = (
     "### Current board:\n{progress}"
 )
 
+# You.com's /v1/search ignores a `site:` operator in the query text; the resources
+# server honors an explicit include_domains field instead (browsecomp_advanced_harness
+# app.py's YouSearchResourcesServer). The tool schema lives in dataset rows, so this
+# property is injected here rather than requiring every dataset to be regenerated.
+# Harmless no-op on the tavily/exa providers, which simply ignore the extra argument.
+_INCLUDE_DOMAINS_PROPERTY = {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": (
+        'Restrict results to these domains, e.g. ["nature.com"]. Use this instead of a '
+        "site: operator in the query -- site: is not reliably honored."
+    ),
+}
+
+
+def _add_include_domains_to_search_tool(tools: list) -> list:
+    tools = list(tools)
+    for i, t in enumerate(tools):
+        is_dict = isinstance(t, dict)
+        if (t.get("name") if is_dict else t.name) != "search":
+            continue
+        parameters = t["parameters"] if is_dict else t.parameters
+        parameters.setdefault("properties", {})["include_domains"] = _INCLUDE_DOMAINS_PROPERTY
+    return tools
+
+
 PRE_RESET_BOARD_NUDGE = (
     "\n\n[SYSTEM NOTE: Your context is about to be RESET — everything except "
     "{kept} will be discarded. This is "
@@ -310,6 +336,8 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
             if self.config.context_reset_keep_rounds > 0:
                 return "the last %d rounds and your progress board" % self.config.context_reset_keep_rounds
             return "your progress board"
+
+        body.tools = _add_include_domains_to_search_tool(body.tools)
 
         if self.config.progress:
             # bc_frankie parity: active_tools = TOOLS + [PROGRESS_TOOL] (+ BASH_TOOL

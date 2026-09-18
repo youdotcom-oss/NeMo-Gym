@@ -599,3 +599,107 @@ class TestYouProvider:
         await server.search(self._req(), SearchRequest(queries=["q"]))
         _, kwargs = mock.search.call_args
         assert kwargs.get("num_results") == 10
+
+    # ---- include_domains ----
+
+    async def test_you_search_passes_include_domains_and_drops_exclude(self, server: YouSearchResourcesServer) -> None:
+        mock = MagicMock()
+        mock.search = AsyncMock(return_value={"results": {"web": []}})
+        server._you_clients = [mock]
+
+        await server.search(self._req(), SearchRequest(queries=["q"], include_domains=["nature.com"]))
+        _, kwargs = mock.search.call_args
+        assert kwargs.get("include_domains") == ["nature.com"]
+        # You.com rejects include and exclude together -- the server-wide blocklist must
+        # not leak into the wire call once include_domains is requested.
+        assert kwargs.get("exclude_domains") == []
+
+    async def test_you_search_include_domains_conflicting_with_blocklist_errors(
+        self, server: YouSearchResourcesServer
+    ) -> None:
+        mock = MagicMock()
+        mock.search = AsyncMock(return_value={"results": {"web": []}})
+        server._you_clients = [mock]
+
+        resp = await server.search(
+            self._req(), SearchRequest(queries=["q"], include_domains=["blacklisteddomain.com"])
+        )
+        assert "conflict" in resp.results_string
+        mock.search.assert_not_called()
+
+    async def test_you_search_include_domains_filters_results_client_side(self) -> None:
+        # eco ignores include_domains server-side -- must still be enforced on the way out.
+        server = self._config_server(you_search_mode="eco")
+        mock = MagicMock()
+        mock.search = AsyncMock(
+            return_value={
+                "results": {
+                    "web": [
+                        {"title": "In", "url": "https://nature.com/x", "snippets": ["a"]},
+                        {"title": "Out", "url": "https://other.com/y", "snippets": ["b"]},
+                    ]
+                }
+            }
+        )
+        server._you_clients = [mock]
+
+        resp = await server.search(self._req(), SearchRequest(queries=["q"], include_domains=["nature.com"]))
+        assert "In" in resp.results_string
+        assert "Out" not in resp.results_string
+
+    async def test_you_search_rewrites_site_operator_into_include_domains(
+        self, server: YouSearchResourcesServer
+    ) -> None:
+        mock = MagicMock()
+        mock.search = AsyncMock(return_value={"results": {"web": []}})
+        server._you_clients = [mock]
+
+        await server.search(self._req(), SearchRequest(queries=["site:foo.com who won"]))
+        args, kwargs = mock.search.call_args
+        assert args[0] == "who won"
+        assert kwargs.get("include_domains") == ["foo.com"]
+
+    async def test_you_search_rewrites_negative_site_operator_into_exclude_domains(
+        self, server: YouSearchResourcesServer
+    ) -> None:
+        mock = MagicMock()
+        mock.search = AsyncMock(return_value={"results": {"web": []}})
+        server._you_clients = [mock]
+
+        await server.search(self._req(), SearchRequest(queries=["-site:foo.com who won"]))
+        args, kwargs = mock.search.call_args
+        assert args[0] == "who won"
+        assert kwargs.get("include_domains") == []
+        assert "foo.com" in (kwargs.get("exclude_domains") or [])
+        assert "blacklisteddomain.com" in (kwargs.get("exclude_domains") or [])
+
+    async def test_you_search_negative_site_with_include_domains_errors(
+        self, server: YouSearchResourcesServer
+    ) -> None:
+        mock = MagicMock()
+        mock.search = AsyncMock(return_value={"results": {"web": []}})
+        server._you_clients = [mock]
+
+        resp = await server.search(
+            self._req(), SearchRequest(queries=["-site:bar.com who won"], include_domains=["foo.com"])
+        )
+        assert "Cannot combine" in resp.results_string
+        mock.search.assert_not_called()
+
+    async def test_you_client_include_domains_payload(self, monkeypatch) -> None:
+        client = YouAIOHTTPClient(headers={}, base_url="https://ydc-index.io", debug=False)
+        fake_request = AsyncMock(return_value=self._http_response(200, {"results": {}}))
+        monkeypatch.setattr(app_module, "request", fake_request)
+
+        await client.search(
+            "q",
+            num_results=5,
+            mode="highlights",
+            crawl_timeout=10,
+            exclude_domains=["blacklisteddomain.com"],
+            include_domains=["foo.com"],
+        )
+        kwargs = fake_request.call_args.kwargs
+        body = json.loads(kwargs["data"])
+        assert body["include_domains"] == ["foo.com"]
+        assert "exclude_domains" not in body
