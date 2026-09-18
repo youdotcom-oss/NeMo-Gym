@@ -5,23 +5,23 @@
     "prepare_script": "benchmarks/browsecomp/prepare.py",
     "prompt_config": null,
     "num_repeats": 1,
-    "Number of examples": 1266,
+    "Number of examples": 400,
     "Number of tools": {
-        "Total # non-null values": 1266,
+        "Total # non-null values": 400,
         "Average": 3.0,
         "Min": 3.0,
         "Max": 3.0,
         "Standard deviation": 0.0
     },
     "Json-dumped number of words (proxy for token count)": {
-        "Total # non-null values": 1266,
-        "Average": 744.24,
-        "Min": 677.0,
-        "Max": 995.0,
-        "Standard deviation": 38.71
+        "Total # non-null values": 400,
+        "Average": 743.21,
+        "Min": 681.0,
+        "Max": 982.0,
+        "Standard deviation": 39.02
     },
     "Number of turns": {
-        "Total # non-null values": 1266,
+        "Total # non-null values": 400,
         "Average": 1.0,
         "Min": 1.0,
         "Max": 1.0,
@@ -35,11 +35,11 @@
         "Standard deviation": 0.0
     },
     "ground_truth": {
-        "unique_count": 1260,
-        "total_count": 1266
+        "unique_count": 398,
+        "total_count": 400
     },
     "question": {
-        "unique_count": 1266,
-        "total_count": 1266
+        "unique_count": 400,
+        "total_count": 400
     }
 }
