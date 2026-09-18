@@ -77,12 +77,26 @@ def _host_matches(url: str, domains: List[str]) -> bool:
     return any(hostname == domain or hostname.endswith("." + domain) for domain in domains)
 
 
-def _finalize_search_blocks(blocks: List[str], include_domains: Optional[List[str]]) -> str:
-    """blocks[0] is always the `[Search Query]: ...` header. If include_domains filtered
-    every result out, say so instead of returning a bare header that reads as 'no results
+def _finalize_search_blocks(
+    blocks: List[str],
+    include_domains: Optional[List[str]],
+    site_operator_domains: Optional[List[str]] = None,
+) -> str:
+    """blocks[0] is always the `[Search Query]: ...` header. Echo the effective domain
+    restriction so the model can see it regardless of how it got there (search_site,
+    include_domains, or a rewritten `site:` operator). If include_domains filtered every
+    result out, say so instead of returning a bare header that reads as 'no results
     exist' rather than 'your filter was too narrow'."""
-    if include_domains and len(blocks) == 1:
-        blocks.append(f"No results found in include_domains: {', '.join(include_domains)}")
+    if include_domains:
+        blocks[0] += f"\n[Restricted to domains]: {', '.join(include_domains)}"
+        if site_operator_domains:
+            blocks[0] += (
+                f"\n[note]: 'site:{site_operator_domains[0]}' in a search query is not a supported "
+                "operator; it was rewritten into the domain restriction above. Use the search_site "
+                "tool to do this directly next time."
+            )
+        if len(blocks) == 1:
+            blocks.append(f"No results found in include_domains: {', '.join(include_domains)}")
     return "\n".join(blocks)
 
 
@@ -137,12 +151,18 @@ class SearchRequest(BaseModel):
         default=None,
         description=(
             "Restrict search results to these domains only (e.g. ['wikipedia.org']). "
-            "Only set this if you are confident you know an authoritative domain for the "
-            "question — e.g. the question names a specific organization, publication, or "
-            "site. Leave unset for general queries."
+            "Use this whenever you know of a likely site for what you're currently "
+            "trying to verify -- e.g. a specific organization, publication, or "
+            "database's own site. You don't need certainty; this is low-stakes and "
+            "reversible, so drop it on your next search if it doesn't help. Leave "
+            "unset for general queries."
         ),
     )
     max_total_length: int = 30000
+    # Populated by _rewrite_site_operator when a `site:X` operator was pulled out of
+    # query text, as opposed to include_domains being set directly. Lets the response
+    # tell the model specifically when it fell back to the unsupported operator.
+    site_operator_domains: List[str] = Field(default_factory=list, exclude=True)
 
     @model_validator(mode="before")
     @classmethod
@@ -179,6 +199,7 @@ class SearchRequest(BaseModel):
         found_domains: List[str] = []
         rewritten = []
         for q in self.queries:
+
             def _capture(m: "re.Match[str]") -> str:
                 found_domains.append(m.group(1))
                 return ""
@@ -188,6 +209,7 @@ class SearchRequest(BaseModel):
         if found_domains:
             print(f"[browsecomp][site_operator_rewritten] query_domains={found_domains}", flush=True)
             self.queries = rewritten
+            self.site_operator_domains = [_normalize_domain(d) for d in found_domains]
             self.include_domains = list(self.include_domains or []) + found_domains
         return self
 
@@ -197,6 +219,28 @@ class SearchRequest(BaseModel):
             normalized = [_normalize_domain(d) for d in self.include_domains]
             self.include_domains = [d for d in normalized if d][:MAX_INCLUDE_DOMAINS] or None
         return self
+
+
+class SearchSiteRequest(SearchRequest):
+    """Same shape as SearchRequest, plus a required `domains` field that the model
+    populates directly -- a named tool for domain-restricted search, rather than an
+    easy-to-miss optional param on plain search."""
+
+    domains: List[str]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _domains_into_include_domains(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        domains = data.get("domains")
+        if domains is None:
+            return data
+        if isinstance(domains, str):
+            domains = [domains]
+        data = dict(data)
+        data["include_domains"] = list(data.get("include_domains") or []) + list(domains)
+        return data
 
 
 class SearchResponse(BaseModel):
@@ -284,6 +328,15 @@ class SearchProviderCallMetrics(BaseModel):
 
 class SearchMetrics(BaseModel):
     provider_calls: List[SearchProviderCallMetrics] = Field(default_factory=list)
+    # Domain-restriction adoption, one increment per search()/search_site() call (not
+    # per query). num_site_operator_rewrites and num_include_domains_explicit are not
+    # mutually exclusive with each other in general, but a call only counts toward
+    # num_include_domains_explicit when it did NOT also need a site: rewrite -- so the
+    # two together answer "is the model using the real tool, or still falling back?".
+    num_search_calls: int = 0
+    num_search_site_calls: int = 0
+    num_include_domains_explicit: int = 0
+    num_site_operator_rewrites: int = 0
 
 
 class BrowseCompVerifyResponse(BrowseCompVerifyRequest, JudgeEvaluation):
@@ -294,6 +347,10 @@ class BrowseCompVerifyResponse(BrowseCompVerifyRequest, JudgeEvaluation):
     # reward in <split>_metrics.json (nested metrics.* records are not recursed).
     num_provider_429s: int = 0
     num_provider_other_retries: int = 0
+    num_search_calls: int = 0
+    num_search_site_calls: int = 0
+    num_include_domains_explicit: int = 0
+    num_site_operator_rewrites: int = 0
 
 
 # Task-local accumulator for provider retry counts. The client retry loops
@@ -993,6 +1050,7 @@ class TavilySearchResourcesServer(SimpleResourcesServer):
         app = super().setup_webserver()
 
         app.post("/search")(self.search)
+        app.post("/search_site")(self.search_site)
         app.post("/browse")(self.browse)
         app.post("/bash_command")(self.bash_command)
 
@@ -1230,6 +1288,11 @@ class TavilySearchResourcesServer(SimpleResourcesServer):
             running_len += len(entry)
         return "\n".join(blocks)
 
+    async def search_site(self, request: Request, body: SearchSiteRequest) -> SearchResponse:
+        """Named tool for domain-restricted search -- delegates to search() (polymorphic
+        per provider subclass) so include_domains handling stays defined in one place."""
+        return await self.search(request, body)
+
     async def search(self, request: Request, body: SearchRequest) -> SearchResponse:
         sid = request.session[SESSION_ID_KEY]
         metrics = self._session_id_to_metrics[sid]
@@ -1239,6 +1302,9 @@ class TavilySearchResourcesServer(SimpleResourcesServer):
 
         if body.queries is None or len(body.queries) == 0:
             return SearchResponse(results_string="Query is none or empty")
+
+        metrics.num_search_calls += 1
+        metrics.num_search_site_calls += isinstance(body, SearchSiteRequest)
 
         max_per_query_length = body.max_total_length // len(body.queries)
         if self.config.search_provider == "exa":
@@ -1378,6 +1444,10 @@ class TavilySearchResourcesServer(SimpleResourcesServer):
             metrics=session_metrics,
             num_provider_429s=num_provider_429s,
             num_provider_other_retries=num_provider_other_retries,
+            num_search_calls=session_metrics.num_search_calls,
+            num_search_site_calls=session_metrics.num_search_site_calls,
+            num_include_domains_explicit=session_metrics.num_include_domains_explicit,
+            num_site_operator_rewrites=session_metrics.num_site_operator_rewrites,
         )
 
         # terminal mode: clean up this session's disk workspace
@@ -1649,6 +1719,7 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         metrics: "SearchMetrics",
         include_domains: Optional[List[str]] = None,
         exclude_domains: Optional[List[str]] = None,
+        site_operator_domains: Optional[List[str]] = None,
     ) -> str:
         if len(query) > 400:
             return "Query is too long, use a maximum of 400 characters and 50 words."
@@ -1697,7 +1768,7 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
                 break
             blocks.append(entry)
             running_len += len(entry)
-        return _finalize_search_blocks(blocks, include_domains)
+        return _finalize_search_blocks(blocks, include_domains, site_operator_domains)
 
     async def _you_search_one_to_disk(
         self,
@@ -1707,6 +1778,7 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         metrics: "SearchMetrics",
         include_domains: Optional[List[str]] = None,
         exclude_domains: Optional[List[str]] = None,
+        site_operator_domains: Optional[List[str]] = None,
     ) -> str:
         """Terminal mode: run one You.com search, write each result's body to disk, return
         title/url/content/[Saved to] metadata. Mirrors the other providers' disk-mode formatting."""
@@ -1762,7 +1834,7 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
                 entry = f"[Title]: {title}\n[URL]: {url}\n[Snippet]: {search_content}\n{saved_line}"
             blocks.append(entry)
             running_len += len(entry)
-        return _finalize_search_blocks(blocks, include_domains)
+        return _finalize_search_blocks(blocks, include_domains, site_operator_domains)
 
     async def search(self, request: Request, body: SearchRequest) -> SearchResponse:
         sid = request.session[SESSION_ID_KEY]
@@ -1774,13 +1846,26 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         if body.queries is None or len(body.queries) == 0:
             return SearchResponse(results_string="Query is none or empty")
 
+        metrics.num_search_calls += 1
+        metrics.num_search_site_calls += isinstance(body, SearchSiteRequest)
+        if body.site_operator_domains:
+            metrics.num_site_operator_rewrites += 1
+        elif body.include_domains:
+            metrics.num_include_domains_explicit += 1
+
         # You.com rejects include_domains and exclude_domains together; include_domains wins.
         exclude_domains = self._exclude_domains
         if body.include_domains:
             normalized_excluded = {_normalize_domain(d) for d in self._exclude_domains}
             overlap = sorted(set(body.include_domains) & normalized_excluded)
             if overlap:
-                raise ValueError(f"include_domains overlaps with excluded domains: {overlap}")
+                # House style: a visible in-band correction, not a raised exception -- the
+                # agent doesn't call raise_for_status on tool calls, so a raise here would
+                # leak a raw exception repr into the model's context instead.
+                return SearchResponse(
+                    results_string=f"[blocked: domains excluded in this environment]: {', '.join(overlap)}\n"
+                    "Retry this search without them."
+                )
             exclude_domains = None
             print(f"[browsecomp][include_domains_used] domains={body.include_domains}", flush=True)
 
@@ -1790,7 +1875,13 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
             results = await asyncio.gather(
                 *[
                     self._you_search_one_to_disk(
-                        q, page_writer, max_per_query_length, metrics, body.include_domains, exclude_domains
+                        q,
+                        page_writer,
+                        max_per_query_length,
+                        metrics,
+                        body.include_domains,
+                        exclude_domains,
+                        body.site_operator_domains,
                     )
                     for q in body.queries
                 ]
@@ -1798,7 +1889,14 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         else:
             results = await asyncio.gather(
                 *[
-                    self._you_search_one(q, max_per_query_length, metrics, body.include_domains, exclude_domains)
+                    self._you_search_one(
+                        q,
+                        max_per_query_length,
+                        metrics,
+                        body.include_domains,
+                        exclude_domains,
+                        body.site_operator_domains,
+                    )
                     for q in body.queries
                 ]
             )

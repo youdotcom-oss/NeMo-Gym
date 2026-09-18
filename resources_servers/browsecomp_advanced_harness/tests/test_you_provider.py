@@ -36,6 +36,7 @@ from resources_servers.browsecomp_advanced_harness.app import (
     BrowseCompResourcesServerConfig,
     BrowseRequest,
     SearchRequest,
+    SearchSiteRequest,
     YouAIOHTTPClient,
     YouSearchResourcesServer,
 )
@@ -676,3 +677,133 @@ class TestYouProvider:
         await server.search(self._req(), SearchRequest(queries=["q"]))
         _, kwargs = mock.search.call_args
         assert kwargs.get("include_domains") is None
+
+    # ---- site: operator rewrite ----
+
+    def test_site_operator_rewritten_into_include_domains(self) -> None:
+        req = SearchRequest(queries=["10-K filing site:SEC.gov"])
+        assert req.queries == ["10-K filing"]
+        assert req.include_domains == ["sec.gov"]
+        assert req.site_operator_domains == ["sec.gov"]
+
+    def test_site_operator_merges_with_explicit_include_domains(self) -> None:
+        req = SearchRequest(queries=["q site:sec.gov"], include_domains=["wikipedia.org"])
+        assert req.include_domains == ["wikipedia.org", "sec.gov"]
+        assert req.site_operator_domains == ["sec.gov"]
+
+    def test_no_site_operator_leaves_site_operator_domains_empty(self) -> None:
+        req = SearchRequest(queries=["q"], include_domains=["sec.gov"])
+        assert req.site_operator_domains == []
+
+    # ---- search_site tool ----
+
+    def test_search_site_request_merges_domains_into_include_domains(self) -> None:
+        req = SearchSiteRequest(queries=["q"], domains=["SEC.gov"])
+        assert req.include_domains == ["sec.gov"]
+
+    async def test_search_site_delegates_to_search(self, server: YouSearchResourcesServer) -> None:
+        mock = MagicMock()
+        mock.search = AsyncMock(
+            return_value={"results": {"web": [{"title": "InScope", "url": "https://sec.gov/x", "snippets": ["y"]}]}}
+        )
+        server._you_clients = [mock]
+
+        resp = await server.search_site(self._req(), SearchSiteRequest(queries=["q"], domains=["sec.gov"]))
+        assert "InScope" in resp.results_string
+        _, kwargs = mock.search.call_args
+        assert kwargs.get("include_domains") == ["sec.gov"]
+
+    # ---- response echoes the effective domain restriction ----
+
+    async def test_search_echoes_restricted_to_domains(self, server: YouSearchResourcesServer) -> None:
+        mock = MagicMock()
+        mock.search = AsyncMock(
+            return_value={"results": {"web": [{"title": "T1", "url": "https://sec.gov/x", "snippets": ["y"]}]}}
+        )
+        server._you_clients = [mock]
+
+        resp = await server.search(self._req(), SearchRequest(queries=["q"], include_domains=["sec.gov"]))
+        assert "[Restricted to domains]: sec.gov" in resp.results_string
+        assert "[note]:" not in resp.results_string
+
+    async def test_search_with_site_operator_echoes_restriction_and_notice(
+        self, server: YouSearchResourcesServer
+    ) -> None:
+        mock = MagicMock()
+        mock.search = AsyncMock(
+            return_value={"results": {"web": [{"title": "T1", "url": "https://sec.gov/x", "snippets": ["y"]}]}}
+        )
+        server._you_clients = [mock]
+
+        resp = await server.search(self._req(), SearchRequest(queries=["10-K filing site:sec.gov"]))
+        assert "[Restricted to domains]: sec.gov" in resp.results_string
+        assert "[note]: 'site:sec.gov' in a search query is not a supported operator" in resp.results_string
+        assert "search_site" in resp.results_string
+
+    async def test_no_include_domains_has_no_restriction_echo(self, server: YouSearchResourcesServer) -> None:
+        mock = MagicMock()
+        mock.search = AsyncMock(return_value={"results": {"web": []}})
+        server._you_clients = [mock]
+
+        resp = await server.search(self._req(), SearchRequest(queries=["q"]))
+        assert "[Restricted to domains]" not in resp.results_string
+
+    # ---- exclude_domains overlap ----
+
+    async def test_include_domains_overlapping_excluded_returns_blocked_string(
+        self, server: YouSearchResourcesServer
+    ) -> None:
+        mock = MagicMock()
+        mock.search = AsyncMock(return_value={"results": {"web": []}})
+        server._you_clients = [mock]
+
+        resp = await server.search(
+            self._req(), SearchRequest(queries=["q"], include_domains=["blacklisteddomain.com"])
+        )
+        assert "[blocked: domains excluded in this environment]: blacklisteddomain.com" in resp.results_string
+        mock.search.assert_not_called()
+
+    # ---- metrics ----
+
+    async def test_search_metrics_count_plain_search(self, server: YouSearchResourcesServer) -> None:
+        mock = MagicMock()
+        mock.search = AsyncMock(return_value={"results": {"web": []}})
+        server._you_clients = [mock]
+
+        await server.search(self._req(), SearchRequest(queries=["q"]))
+        metrics = server._session_id_to_metrics["test_session_id"]
+        assert metrics.num_search_calls == 1
+        assert metrics.num_search_site_calls == 0
+        assert metrics.num_include_domains_explicit == 0
+        assert metrics.num_site_operator_rewrites == 0
+
+    async def test_search_metrics_count_explicit_include_domains(self, server: YouSearchResourcesServer) -> None:
+        mock = MagicMock()
+        mock.search = AsyncMock(return_value={"results": {"web": []}})
+        server._you_clients = [mock]
+
+        await server.search(self._req(), SearchRequest(queries=["q"], include_domains=["sec.gov"]))
+        metrics = server._session_id_to_metrics["test_session_id"]
+        assert metrics.num_include_domains_explicit == 1
+        assert metrics.num_site_operator_rewrites == 0
+
+    async def test_search_metrics_count_site_operator_rewrite(self, server: YouSearchResourcesServer) -> None:
+        mock = MagicMock()
+        mock.search = AsyncMock(return_value={"results": {"web": []}})
+        server._you_clients = [mock]
+
+        await server.search(self._req(), SearchRequest(queries=["q site:sec.gov"]))
+        metrics = server._session_id_to_metrics["test_session_id"]
+        assert metrics.num_site_operator_rewrites == 1
+        assert metrics.num_include_domains_explicit == 0
+
+    async def test_search_metrics_count_search_site_calls(self, server: YouSearchResourcesServer) -> None:
+        mock = MagicMock()
+        mock.search = AsyncMock(return_value={"results": {"web": []}})
+        server._you_clients = [mock]
+
+        await server.search_site(self._req(), SearchSiteRequest(queries=["q"], domains=["sec.gov"]))
+        metrics = server._session_id_to_metrics["test_session_id"]
+        assert metrics.num_search_calls == 1
+        assert metrics.num_search_site_calls == 1
+        assert metrics.num_include_domains_explicit == 1

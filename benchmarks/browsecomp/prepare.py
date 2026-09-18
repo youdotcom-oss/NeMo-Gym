@@ -52,13 +52,11 @@ SYSTEM_PROMPT = (
     "process. Avoid presenting only the final answer, as this makes it "
     "difficult to understand.\n"
     "6. At any point in your investigation -- not just on the first search -- "
-    "if you become confident of an authoritative domain for what you're "
-    "currently trying to verify (e.g. you've identified a specific company, "
-    "publication, database, or organization whose own site would have the "
-    "answer), use the search tool's include_domains parameter to focus your "
-    "next query there. Never write `site:domain.com` inside a query string -- "
-    "it is not supported and will be stripped out; always pass the domain "
-    "through include_domains instead."
+    "if you know of a specific site that likely has the answer (a company, "
+    "publication, database, or organization's own site), use the search_site "
+    "tool to focus your next query there. This is routine, low-stakes, and "
+    "reversible: fall back to plain search on your next turn if it doesn't "
+    "pan out, so there's no need to hold out for certainty."
 )
 
 QUERY_SUFFIX = (
@@ -70,7 +68,7 @@ QUERY_SUFFIX = (
 
 WORKSPACE_SYSTEM_ADDENDUM = (
     "\n\n## Tool output and the pages/ workspace\n"
-    "The `search` and `browse` tools save retrieved content to local files in "
+    "The `search`, `search_site`, and `browse` tools save retrieved content to local files in "
     "pages/ and return only metadata (title, URL, snippet, [Saved to] path) "
     "in the tool response. Use the `bash_command` tool (with grep, head, sed, "
     "etc.) to read or search those files. After a context reset, `ls pages/` "
@@ -90,11 +88,7 @@ TOOLS = [
             "pages/<idx>_search_<slug>_rN.txt under the current workspace; "
             "the tool response returns the per-result title, URL, snippet, "
             "and [Saved to] path. Use bash_command to read the saved files. "
-            "To restrict a search to a specific site, use the include_domains "
-            "parameter -- do not write `site:domain.com` in the query text, it "
-            "is not a supported search operator here and will be stripped out. "
-            'Example: instead of queries=["10-K filing site:sec.gov"], call with '
-            'queries=["10-K filing"], include_domains=["sec.gov"].'
+            "To restrict a search to a specific site, use the search_site tool instead."
         ),
         "parameters": {
             "type": "object",
@@ -102,11 +96,7 @@ TOOLS = [
                 "queries": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": (
-                        "Search queries. All queries are executed in parallel. Plain "
-                        "keyword text only -- no `site:` operator; use include_domains "
-                        "to restrict to a domain."
-                    ),
+                    "description": "Search queries. All queries are executed in parallel.",
                 },
                 "include_domains": {
                     "type": "array",
@@ -114,15 +104,44 @@ TOOLS = [
                     "description": (
                         "Optional. Restrict results to these domains, e.g. "
                         '["wikipedia.org", "sec.gov"]. Bare hostnames, no scheme or path; '
-                        "subdomains match. Omit to search the whole web -- use this any time "
-                        "during your investigation, not just on the first search, once you "
-                        "become confident of an authoritative domain for what you're currently "
-                        "trying to verify. This is the only way to restrict a search to a site; "
-                        "`site:` inside a query string is not supported."
+                        "subdomains match. Omit to search the whole web. Prefer the "
+                        "search_site tool when you already know you want to scope to a site."
                     ),
                 },
             },
             "required": ["queries"],
+        },
+        "strict": False,
+    },
+    {
+        "type": "function",
+        "name": "search_site",
+        "description": (
+            "Same as `search`, but restricted to specific sites. Use this whenever you "
+            "know which site should hold the answer -- an organization's, publication's, "
+            "database's, or company's own site. Low stakes: if it comes back empty, fall "
+            "back to plain `search` on your next turn. This is the tool for scoping a "
+            "search to a site -- writing `site:domain.com` inside a `search` query is not "
+            "a supported operator and will be rewritten for you, but search_site is the "
+            "direct way to do it."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "queries": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Search queries, executed in parallel. Plain keyword text.",
+                },
+                "domains": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        'Sites to search, bare hostnames, e.g. ["sec.gov", "nature.com"]. Subdomains match.'
+                    ),
+                },
+            },
+            "required": ["queries", "domains"],
         },
         "strict": False,
     },
