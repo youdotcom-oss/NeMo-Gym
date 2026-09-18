@@ -59,6 +59,8 @@ YouSearchMode = Literal["snippets", "highlights", "full_page", "eco", "lite"]
 
 MAX_INCLUDE_DOMAINS = 20
 
+_SITE_OPERATOR_RE = re.compile(r"\bsite:([^\s\"']+)", re.IGNORECASE)
+
 
 def _normalize_domain(raw: str) -> str:
     """ "https://WWW.SEC.gov/foo" -> "sec.gov". Bare hostname, lowercase, no www."""
@@ -131,7 +133,15 @@ class BrowseCompResourcesServerConfig(BaseResourcesServerConfig):
 
 class SearchRequest(BaseModel):
     queries: Optional[List[str]] = None  # Make optional to handle missing args gracefully
-    include_domains: Optional[List[str]] = None
+    include_domains: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Restrict search results to these domains only (e.g. ['wikipedia.org']). "
+            "Only set this if you are confident you know an authoritative domain for the "
+            "question — e.g. the question names a specific organization, publication, or "
+            "site. Leave unset for general queries."
+        ),
+    )
     max_total_length: int = 30000
 
     @model_validator(mode="before")
@@ -157,6 +167,29 @@ class SearchRequest(BaseModel):
         data = dict(data)
         data["queries"] = queries
         return data
+
+    @model_validator(mode="after")
+    def _rewrite_site_operator(self) -> "SearchRequest":
+        """We don't want the model using `site:` query syntax -- route it through
+        include_domains instead, so exclude_domains conflicts and domain normalization
+        are handled in one place. Model still does this occasionally despite prompt/tool
+        guidance, so rewrite it here rather than relying on compliance."""
+        if not self.queries:
+            return self
+        found_domains: List[str] = []
+        rewritten = []
+        for q in self.queries:
+            def _capture(m: "re.Match[str]") -> str:
+                found_domains.append(m.group(1))
+                return ""
+
+            cleaned = _SITE_OPERATOR_RE.sub(_capture, q)
+            rewritten.append(re.sub(r"\s+", " ", cleaned).strip())
+        if found_domains:
+            print(f"[browsecomp][site_operator_rewritten] query_domains={found_domains}", flush=True)
+            self.queries = rewritten
+            self.include_domains = list(self.include_domains or []) + found_domains
+        return self
 
     @model_validator(mode="after")
     def _normalize_include_domains(self) -> "SearchRequest":
@@ -1610,7 +1643,12 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         return " ... ".join(s for s in snippets if s) or (result.get("description") or "")
 
     async def _you_search_one(
-        self, query: str, max_length: int, metrics: "SearchMetrics", include_domains: Optional[List[str]] = None
+        self,
+        query: str,
+        max_length: int,
+        metrics: "SearchMetrics",
+        include_domains: Optional[List[str]] = None,
+        exclude_domains: Optional[List[str]] = None,
     ) -> str:
         if len(query) > 400:
             return "Query is too long, use a maximum of 400 characters and 50 words."
@@ -1623,7 +1661,7 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
                 num_results=5,
                 mode=self.config.you_search_mode,
                 crawl_timeout=self.config.you_crawl_timeout,
-                exclude_domains=self._exclude_domains,
+                exclude_domains=exclude_domains,
                 include_domains=include_domains,
             )
         except ClientResponseError as e:
@@ -1668,6 +1706,7 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         max_per_query: int,
         metrics: "SearchMetrics",
         include_domains: Optional[List[str]] = None,
+        exclude_domains: Optional[List[str]] = None,
     ) -> str:
         """Terminal mode: run one You.com search, write each result's body to disk, return
         title/url/content/[Saved to] metadata. Mirrors the other providers' disk-mode formatting."""
@@ -1682,7 +1721,7 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
                 num_results=10,  # ponytail: you.com-only override, bump config.max_results if other providers need it too
                 mode=self.config.you_search_mode,
                 crawl_timeout=self.config.you_crawl_timeout,
-                exclude_domains=self._exclude_domains,
+                exclude_domains=exclude_domains,
                 include_domains=include_domains,
             )
         except ClientResponseError as e:
@@ -1735,18 +1774,33 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         if body.queries is None or len(body.queries) == 0:
             return SearchResponse(results_string="Query is none or empty")
 
+        # You.com rejects include_domains and exclude_domains together; include_domains wins.
+        exclude_domains = self._exclude_domains
+        if body.include_domains:
+            normalized_excluded = {_normalize_domain(d) for d in self._exclude_domains}
+            overlap = sorted(set(body.include_domains) & normalized_excluded)
+            if overlap:
+                raise ValueError(f"include_domains overlaps with excluded domains: {overlap}")
+            exclude_domains = None
+            print(f"[browsecomp][include_domains_used] domains={body.include_domains}", flush=True)
+
         max_per_query_length = body.max_total_length // len(body.queries)
         page_writer = self._get_page_writer(sid)
         if page_writer is not None:
             results = await asyncio.gather(
                 *[
-                    self._you_search_one_to_disk(q, page_writer, max_per_query_length, metrics, body.include_domains)
+                    self._you_search_one_to_disk(
+                        q, page_writer, max_per_query_length, metrics, body.include_domains, exclude_domains
+                    )
                     for q in body.queries
                 ]
             )
         else:
             results = await asyncio.gather(
-                *[self._you_search_one(q, max_per_query_length, metrics, body.include_domains) for q in body.queries]
+                *[
+                    self._you_search_one(q, max_per_query_length, metrics, body.include_domains, exclude_domains)
+                    for q in body.queries
+                ]
             )
 
         return SearchResponse(results_string="\n\n".join(results))

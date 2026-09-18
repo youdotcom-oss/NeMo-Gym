@@ -50,7 +50,15 @@ SYSTEM_PROMPT = (
     "do your best to provide an accurate answer.\n"
     "5. When providing the final answer, begin by explaining the reasoning "
     "process. Avoid presenting only the final answer, as this makes it "
-    "difficult to understand."
+    "difficult to understand.\n"
+    "6. At any point in your investigation -- not just on the first search -- "
+    "if you become confident of an authoritative domain for what you're "
+    "currently trying to verify (e.g. you've identified a specific company, "
+    "publication, database, or organization whose own site would have the "
+    "answer), use the search tool's include_domains parameter to focus your "
+    "next query there. Never write `site:domain.com` inside a query string -- "
+    "it is not supported and will be stripped out; always pass the domain "
+    "through include_domains instead."
 )
 
 QUERY_SUFFIX = (
@@ -81,7 +89,12 @@ TOOLS = [
             "Each result's full raw content is saved to "
             "pages/<idx>_search_<slug>_rN.txt under the current workspace; "
             "the tool response returns the per-result title, URL, snippet, "
-            "and [Saved to] path. Use bash_command to read the saved files."
+            "and [Saved to] path. Use bash_command to read the saved files. "
+            "To restrict a search to a specific site, use the include_domains "
+            "parameter -- do not write `site:domain.com` in the query text, it "
+            "is not a supported search operator here and will be stripped out. "
+            'Example: instead of queries=["10-K filing site:sec.gov"], call with '
+            'queries=["10-K filing"], include_domains=["sec.gov"].'
         ),
         "parameters": {
             "type": "object",
@@ -89,7 +102,11 @@ TOOLS = [
                 "queries": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": ("Search queries. All queries are executed in parallel."),
+                    "description": (
+                        "Search queries. All queries are executed in parallel. Plain "
+                        "keyword text only -- no `site:` operator; use include_domains "
+                        "to restrict to a domain."
+                    ),
                 },
                 "include_domains": {
                     "type": "array",
@@ -97,8 +114,11 @@ TOOLS = [
                     "description": (
                         "Optional. Restrict results to these domains, e.g. "
                         '["wikipedia.org", "sec.gov"]. Bare hostnames, no scheme or path; '
-                        "subdomains match. Omit to search the whole web -- only use this "
-                        "when you are confident the answer lives on a specific site."
+                        "subdomains match. Omit to search the whole web -- use this any time "
+                        "during your investigation, not just on the first search, once you "
+                        "become confident of an authoritative domain for what you're currently "
+                        "trying to verify. This is the only way to restrict a search to a site; "
+                        "`site:` inside a query string is not supported."
                     ),
                 },
             },
