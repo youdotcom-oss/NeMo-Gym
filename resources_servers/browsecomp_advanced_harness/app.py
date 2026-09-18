@@ -1840,9 +1840,7 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         else:
             results = await asyncio.gather(
                 *[
-                    self._you_search_one(
-                        _query_text(q), max_per_query_length, metrics, _query_include_domains(q)
-                    )
+                    self._you_search_one(_query_text(q), max_per_query_length, metrics, _query_include_domains(q))
                     for q in body.queries
                 ]
             )

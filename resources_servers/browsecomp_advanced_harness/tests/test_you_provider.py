@@ -600,14 +600,14 @@ class TestYouProvider:
         _, kwargs = mock.search.call_args
         assert kwargs.get("num_results") == 10
 
-    # ---- include_domains ----
+    # ---- include_domains: per-query scoping (SearchQuery), never call-level ----
 
     async def test_you_search_passes_include_domains_and_drops_exclude(self, server: YouSearchResourcesServer) -> None:
         mock = MagicMock()
         mock.search = AsyncMock(return_value={"results": {"web": []}})
         server._you_clients = [mock]
 
-        await server.search(self._req(), SearchRequest(queries=["q"], include_domains=["nature.com"]))
+        await server.search(self._req(), SearchRequest(queries=[{"query": "q", "include_domains": ["nature.com"]}]))
         _, kwargs = mock.search.call_args
         assert kwargs.get("include_domains") == ["nature.com"]
         # You.com rejects include and exclude together -- the server-wide blocklist must
@@ -622,7 +622,7 @@ class TestYouProvider:
         server._you_clients = [mock]
 
         resp = await server.search(
-            self._req(), SearchRequest(queries=["q"], include_domains=["blacklisteddomain.com"])
+            self._req(), SearchRequest(queries=[{"query": "q", "include_domains": ["blacklisteddomain.com"]}])
         )
         assert "conflict" in resp.results_string
         mock.search.assert_not_called()
@@ -643,7 +643,9 @@ class TestYouProvider:
         )
         server._you_clients = [mock]
 
-        resp = await server.search(self._req(), SearchRequest(queries=["q"], include_domains=["nature.com"]))
+        resp = await server.search(
+            self._req(), SearchRequest(queries=[{"query": "q", "include_domains": ["nature.com"]}])
+        )
         assert "In" in resp.results_string
         assert "Out" not in resp.results_string
 
@@ -681,10 +683,30 @@ class TestYouProvider:
         server._you_clients = [mock]
 
         resp = await server.search(
-            self._req(), SearchRequest(queries=["-site:bar.com who won"], include_domains=["foo.com"])
+            self._req(),
+            SearchRequest(queries=[{"query": "-site:bar.com who won", "include_domains": ["foo.com"]}]),
         )
         assert "Cannot combine" in resp.results_string
         mock.search.assert_not_called()
+
+    async def test_you_search_include_domains_scoped_to_one_query_only(self, server: YouSearchResourcesServer) -> None:
+        # Regression: include_domains used to be a call-level field broadcast to every query
+        # in the same search() call. It must now only ever apply to the query that asked for it.
+        mock = MagicMock()
+        mock.search = AsyncMock(return_value={"results": {"web": []}})
+        server._you_clients = [mock]
+
+        await server.search(
+            self._req(),
+            SearchRequest(queries=["unscoped query", {"query": "scoped query", "include_domains": ["nature.com"]}]),
+        )
+        assert mock.search.call_count == 2
+        calls_by_query = {c.args[0]: c.kwargs for c in mock.search.call_args_list}
+        assert calls_by_query["unscoped query"].get("include_domains") == []
+        assert calls_by_query["scoped query"].get("include_domains") == ["nature.com"]
+        # the unscoped query still gets the server-wide blocklist; the scoped one drops it
+        assert calls_by_query["unscoped query"].get("exclude_domains") == ["blacklisteddomain.com"]
+        assert calls_by_query["scoped query"].get("exclude_domains") == []
 
     async def test_you_client_include_domains_payload(self, monkeypatch) -> None:
         client = YouAIOHTTPClient(headers={}, base_url="https://ydc-index.io", debug=False)
