@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from time import time
-from typing import Any, ClassVar, Dict, List, Literal, Optional
+from typing import Any, ClassVar, Dict, List, Literal, Optional, Union
 from urllib.parse import urlparse
 
 from aiohttp import ClientResponseError
@@ -123,26 +123,46 @@ def _coerce_str_list(value: Any) -> Any:
     return value
 
 
-class SearchRequest(BaseModel):
-    queries: Optional[List[str]] = None  # Make optional to handle missing args gracefully
-    # You.com only: domains to restrict results to (see YouSearchResourcesServer). Ignored
-    # by the tavily/exa providers.
+class SearchQuery(BaseModel):
+    """A single query with its own domain scoping -- kept separate from a plain string item
+    so include_domains never leaks onto sibling queries in the same search() call."""
+
+    query: str
+    # You.com only: restrict THIS query's results to these domains. Ignored by tavily/exa.
     include_domains: Optional[List[str]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_include_domains(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("include_domains") is not None:
+            data = dict(data)
+            data["include_domains"] = _coerce_str_list(data["include_domains"])
+        return data
+
+
+def _query_text(q: "str | SearchQuery") -> str:
+    return q if isinstance(q, str) else q.query
+
+
+def _query_include_domains(q: "str | SearchQuery") -> List[str]:
+    if isinstance(q, str) or not q.include_domains:
+        return []
+    return [_normalize_domain(d) for d in q.include_domains]
+
+
+class SearchRequest(BaseModel):
+    # Plain string for a normal query; {"query": ..., "include_domains": [...]} to scope just
+    # that one query (You.com only) -- see SearchQuery.
+    queries: Optional[List[Union[str, SearchQuery]]] = None
     max_total_length: int = 30000
 
     @model_validator(mode="before")
     @classmethod
     def coerce_queries(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
+        if not isinstance(data, dict) or data.get("queries") is None:
             return data
-        if data.get("queries") is None and data.get("include_domains") is None:
-            return data
-
         data = dict(data)
-        if data.get("queries") is not None:
-            data["queries"] = _coerce_str_list(data["queries"])
-        if data.get("include_domains") is not None:
-            data["include_domains"] = _coerce_str_list(data["include_domains"])
+        data["queries"] = _coerce_str_list(data["queries"])
         return data
 
 
@@ -1222,19 +1242,22 @@ class TavilySearchResourcesServer(SimpleResourcesServer):
         if self.config.search_provider == "exa":
             # Exa: highlights-only, always inline (no disk pages, even in terminal mode).
             results = await asyncio.gather(
-                *[self._exa_search_one(q, max_per_query_length, metrics) for q in body.queries]
+                *[self._exa_search_one(_query_text(q), max_per_query_length, metrics) for q in body.queries]
             )
         else:
             page_writer = self._get_page_writer(sid)
             if page_writer is not None:
                 # terminal mode: write each result to disk, return metadata + paths
                 results = await asyncio.gather(
-                    *[self._search_one_to_disk(q, page_writer, max_per_query_length, metrics) for q in body.queries]
+                    *[
+                        self._search_one_to_disk(_query_text(q), page_writer, max_per_query_length, metrics)
+                        for q in body.queries
+                    ]
                 )
             else:
                 # inline mode: return content directly
                 results = await asyncio.gather(
-                    *[self._search_one(q, max_per_query_length, metrics) for q in body.queries]
+                    *[self._search_one(_query_text(q), max_per_query_length, metrics) for q in body.queries]
                 )
 
         return SearchResponse(results_string="\n\n".join(results))
@@ -1800,25 +1823,28 @@ class YouSearchResourcesServer(TavilySearchResourcesServer):
         if body.queries is None or len(body.queries) == 0:
             return SearchResponse(results_string="Query is none or empty")
 
-        include_domains = [_normalize_domain(d) for d in (body.include_domains or [])]
-        overlap = self._overlapping_excludes(include_domains)
-        if overlap:
-            return SearchResponse(
-                results_string=f"Error: include_domains {include_domains} conflict with blocked domain(s) {overlap}."
-            )
-
+        # include_domains is per-query (SearchQuery), never shared across siblings in this
+        # call -- _resolve_you_query_filters validates each query's own list against the
+        # blocklist independently.
         max_per_query_length = body.max_total_length // len(body.queries)
         page_writer = self._get_page_writer(sid)
         if page_writer is not None:
             results = await asyncio.gather(
                 *[
-                    self._you_search_one_to_disk(q, page_writer, max_per_query_length, metrics, include_domains)
+                    self._you_search_one_to_disk(
+                        _query_text(q), page_writer, max_per_query_length, metrics, _query_include_domains(q)
+                    )
                     for q in body.queries
                 ]
             )
         else:
             results = await asyncio.gather(
-                *[self._you_search_one(q, max_per_query_length, metrics, include_domains) for q in body.queries]
+                *[
+                    self._you_search_one(
+                        _query_text(q), max_per_query_length, metrics, _query_include_domains(q)
+                    )
+                    for q in body.queries
+                ]
             )
 
         return SearchResponse(results_string="\n\n".join(results))
