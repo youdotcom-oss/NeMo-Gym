@@ -171,18 +171,19 @@ TOOLS = [
 
 BROWSECOMP_CSV_URL = "https://openaipublic.blob.core.windows.net/simple-evals/browse_comp_test_set.csv"
 
-# By default prepare() writes a reproducible 400-sample subset; set BROWSECOMP_RUN_FULL=1 for the full 1266.
+# By default prepare() writes a reproducible 400-sample subset; set BROWSECOMP_RUN_FULL=1 for the full
+# 1266, or BROWSECOMP_SUBSET_N=<n> for a different subset size (e.g. 100 for a small shared sample).
 BROWSECOMP_SUBSET_N = 400
 BROWSECOMP_SUBSET_SEED = 42
 
 
-def _select_samples(df, run_full: bool):
-    """1266-row df in -> the full df if run_full, else a deterministic 400-row subset (seed 42).
-    Uses stdlib random.Random(seed).sample, the same selection the bc_frankie harness's
-    browsecomp_eval.py performs, so both harnesses' seed-42 subset is the same 400."""
+def _select_samples(df, run_full: bool, n: int = BROWSECOMP_SUBSET_N):
+    """1266-row df in -> the full df if run_full, else a deterministic n-row subset (seed 42).
+    Uses stdlib random.Random(seed).sample. At n=400 this matches the bc_frankie harness's
+    browsecomp_eval.py selection; other n values are their own selection, not a subset of the 400."""
     if run_full:
         return df
-    idx = random.Random(BROWSECOMP_SUBSET_SEED).sample(range(len(df)), BROWSECOMP_SUBSET_N)
+    idx = random.Random(BROWSECOMP_SUBSET_SEED).sample(range(len(df)), n)
     return df.iloc[idx].reset_index(drop=True)
 
 
@@ -221,7 +222,7 @@ def map_browsecomp_sample_to_rl_sample(row: dict) -> dict:
 
 
 def prepare() -> Path:
-    """Download and prepare AIME 2025 data. Returns the output file path."""
+    """Download and prepare BrowseComp data. Returns the output file path."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     print(f"Downloading BrowseComp dataset from {BROWSECOMP_CSV_URL} ...")
@@ -229,8 +230,9 @@ def prepare() -> Path:
     assert len(df) == 1266, f"Expected 1266 samples, got {len(df)}"
 
     run_full = os.environ.get("BROWSECOMP_RUN_FULL", "").lower() in ("1", "true", "yes")
-    df = _select_samples(df, run_full)
-    mode = "FULL 1266" if run_full else f"{BROWSECOMP_SUBSET_N}-sample subset (seed {BROWSECOMP_SUBSET_SEED})"
+    n = int(os.environ.get("BROWSECOMP_SUBSET_N", BROWSECOMP_SUBSET_N))
+    df = _select_samples(df, run_full, n)
+    mode = "FULL 1266" if run_full else f"{n}-sample subset (seed {BROWSECOMP_SUBSET_SEED})"
     print(f"BrowseComp: writing {mode} ({len(df)} rows)")
 
     count = 0
