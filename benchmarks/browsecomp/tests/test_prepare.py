@@ -55,3 +55,10 @@ def test_subset_is_strict_subset_no_dupes():
     rows = set(out["row"])
     assert rows.issubset(set(range(1266)))
     assert len(rows) == 400  # no fabricated or duplicated rows
+
+
+def test_subset_n_override():
+    out = _select_samples(_df(), run_full=False, n=100)
+    rows = list(out["row"])
+    assert len(rows) == len(set(rows)) == 100
+    assert rows == random.Random(BROWSECOMP_SUBSET_SEED).sample(range(1266), 100)

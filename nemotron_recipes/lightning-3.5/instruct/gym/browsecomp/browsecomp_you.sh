@@ -24,12 +24,17 @@
 #
 # Uses You.com's "highlights" search mode (query-relevant passages per page).
 #
-#   nemotron_recipes/lightning-3.5/instruct/gym/browsecomp/browsecomp.sh                         # full benchmark (1266 tasks x 1)
-#   LIMIT=3 nemotron_recipes/lightning-3.5/instruct/gym/browsecomp/browsecomp.sh                 # quick smoke
-#   OUT=<dir> PARALLEL=<n> nemotron_recipes/lightning-3.5/instruct/gym/browsecomp/browsecomp.sh  # output dir, concurrency
+#   nemotron_recipes/lightning-3.5/instruct/gym/browsecomp/browsecomp_you.sh                         # shared 100-task subset
+#   BROWSECOMP_RUN_FULL=1 nemotron_recipes/lightning-3.5/instruct/gym/browsecomp/browsecomp_you.sh    # full benchmark (1266 tasks x 1)
+#   LIMIT=3 nemotron_recipes/lightning-3.5/instruct/gym/browsecomp/browsecomp_you.sh                  # quick smoke
+#   OUT=<dir> PARALLEL=<n> nemotron_recipes/lightning-3.5/instruct/gym/browsecomp/browsecomp_you.sh   # output dir, concurrency
 
-# Runs all 1266 problems. Unset for prepare.py's default 400-problem subset.
-export BROWSECOMP_RUN_FULL=1
+# Shared 100-problem subset (seed 42, deterministic — same 100 tasks for everyone on the team).
+# Set BROWSECOMP_RUN_FULL=1 to run all 1266 instead, or override BROWSECOMP_SUBSET_N for a
+# different subset size. Note: a different N is its own random.Random(42).sample draw, not
+# a subset of another N's rows. See prepare.py's BROWSECOMP_SUBSET_N/_select_samples.
+export BROWSECOMP_RUN_FULL=0
+export BROWSECOMP_SUBSET_N=100
 
 # Used judge: GLM-5.1
 BROWSECOMP_JUDGE_MODEL="${BROWSECOMP_JUDGE_MODEL:?}"
