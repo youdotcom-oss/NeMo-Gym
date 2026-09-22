@@ -488,10 +488,6 @@ class VLLMModel(SimpleResponsesAPIModel):
                     message_dict["content"] = remaining_content
                     if reasoning_matches and self.config.uses_interleaved_reasoning:
                         message_dict["reasoning_content"] = reasoning_matches[0]
-
-                        # TODO when NeMo RL migrates to vLLM>=0.16.0, remove the reasoning_content support above.
-                        # Starting with vLLM 0.16.0, the `reasoning_content` field has been deprecated in favor of just `reasoning`
-                        message_dict["reasoning"] = reasoning_matches[0]
                 elif isinstance(content, list):
                     reasoning_content = None
                     for content_item_dict in content:
@@ -506,8 +502,6 @@ class VLLMModel(SimpleResponsesAPIModel):
                         content_item_dict["text"] = remaining_content
                         if reasoning_matches and self.config.uses_interleaved_reasoning:
                             message_dict["reasoning_content"] = reasoning_matches[0]
-                            # See the TODO wrt reasoning_content above
-                            message_dict["reasoning"] = reasoning_matches[0]
                 elif not content:
                     # No content or content None is a no-op
                     pass
