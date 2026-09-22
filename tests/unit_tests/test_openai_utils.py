@@ -14,6 +14,7 @@
 # limitations under the License.
 from types import UnionType
 from typing import Annotated, Any, Dict, List, Literal, NotRequired, Required, Union, get_args, get_origin
+from unittest.mock import AsyncMock, MagicMock
 
 import openai
 import pytest
@@ -45,7 +46,10 @@ from openai.types.responses.response_output_item import (
 )
 from pydantic import ValidationError
 
+import nemo_gym.openai_utils as openai_utils_module
 from nemo_gym.openai_utils import (
+    MODEL_BACKOFF_CAP_S,
+    MODEL_MAX_ATTEMPTS,
     RESPONSES_TO_TRAIN,
     NeMoGymAsyncOpenAI,
     NeMoGymChatCompletion,
@@ -98,9 +102,60 @@ def _response_with_output(output: list) -> dict:
     }
 
 
+def _fake_response(status: int, body: bytes = b"boom") -> MagicMock:
+    response = MagicMock()
+    response.status = status
+    response.content.read = AsyncMock(return_value=body)
+    return response
+
+
 class TestOpenAIUtils:
     async def test_NeMoGymAsyncOpenAI(self) -> None:
         NeMoGymAsyncOpenAI(api_key="abc", base_url="https://api.openai.com/v1")
+
+
+class TestNeMoGymAsyncOpenAIRetry:
+    """The retry loop must terminate under a SUSTAINED rate limit, not just under a
+    finite one -- a prior version raised its own cap in the same iteration it consumed
+    an attempt, so a steady stream of 429/502/503/504/520 retried forever."""
+
+    async def test_sustained_429_terminates_and_raises(self, monkeypatch) -> None:
+        fake_request = AsyncMock(return_value=_fake_response(429))
+        recorded_sleeps: List[float] = []
+        monkeypatch.setattr(openai_utils_module, "request", fake_request)
+        monkeypatch.setattr(openai_utils_module, "sleep", AsyncMock(side_effect=recorded_sleeps.append))
+        monkeypatch.setattr(openai_utils_module, "raise_for_status", AsyncMock(side_effect=RuntimeError))
+
+        client = NeMoGymAsyncOpenAI(api_key="abc", base_url="https://api.openai.com/v1")
+        with pytest.raises(RuntimeError):
+            await client._request_with_retry(method="GET", url="https://api.openai.com/v1/models")
+
+        assert fake_request.call_count == MODEL_MAX_ATTEMPTS
+        assert recorded_sleeps == [min(2**attempt, MODEL_BACKOFF_CAP_S) for attempt in range(MODEL_MAX_ATTEMPTS)]
+
+    async def test_retry_then_success_returns_response(self, monkeypatch) -> None:
+        fake_request = AsyncMock(side_effect=[_fake_response(429), _fake_response(200)])
+        monkeypatch.setattr(openai_utils_module, "request", fake_request)
+        monkeypatch.setattr(openai_utils_module, "sleep", AsyncMock())
+
+        client = NeMoGymAsyncOpenAI(api_key="abc", base_url="https://api.openai.com/v1")
+        response = await client._request_with_retry(method="GET", url="https://api.openai.com/v1/models")
+
+        assert response.status == 200
+        assert fake_request.call_count == 2
+
+    async def test_504_is_not_logged_as_429(self, monkeypatch, capsys) -> None:
+        """A 504 is a gateway timeout, not a rate limit -- the log tag must not conflate them."""
+        fake_request = AsyncMock(side_effect=[_fake_response(504), _fake_response(200)])
+        monkeypatch.setattr(openai_utils_module, "request", fake_request)
+        monkeypatch.setattr(openai_utils_module, "sleep", AsyncMock())
+
+        client = NeMoGymAsyncOpenAI(api_key="abc", base_url="https://api.openai.com/v1")
+        await client._request_with_retry(method="GET", url="https://api.openai.com/v1/models")
+
+        out = capsys.readouterr().out
+        assert "[model_retry_5xx]" in out
+        assert "[model_retry_429]" not in out
 
 
 class TestNeMoGymResponseCreateParamsNonStreaming:
