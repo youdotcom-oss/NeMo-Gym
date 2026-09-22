@@ -97,6 +97,19 @@ class GlobalAIOHTTPAsyncClientConfig(BaseModel):
         description=("TCP_KEEPCNT: number of unanswered probes before the kernel drops the connection."),
     )
 
+    global_aiohttp_sock_connect_timeout_seconds: float = Field(
+        default=15.0,
+        description="Max seconds to establish a TCP connection before giving up. No total/read timeout is set here so a legitimately long generation is never killed.",
+    )
+    global_aiohttp_sock_read_timeout_seconds: float = Field(
+        default=1800.0,
+        description=(
+            "Max seconds of silence between bytes on an open socket (resets on every chunk received, so it "
+            "cannot cut off a long-running generation that is still producing output -- only a wedged read "
+            "with no HTTP-level timeout to ever notice it)."
+        ),
+    )
+
 
 def get_global_aiohttp_client(
     global_config_dict_parser_config: Optional[GlobalConfigDictParserConfig] = None,
@@ -155,7 +168,10 @@ def set_global_aiohttp_client(cfg: GlobalAIOHTTPAsyncClientConfig) -> ClientSess
                 probes=cfg.global_aiohttp_tcp_keepalive_probes,
             ),
         ),
-        timeout=ClientTimeout(),
+        timeout=ClientTimeout(
+            sock_connect=cfg.global_aiohttp_sock_connect_timeout_seconds,
+            sock_read=cfg.global_aiohttp_sock_read_timeout_seconds,
+        ),
         cookie_jar=DummyCookieJar(),
     )
 

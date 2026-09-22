@@ -115,7 +115,6 @@ from typing_extensions import TypedDict
 
 from nemo_gym.server_utils import (
     _GLOBAL_AIOHTTP_CLIENT_REQUEST_DEBUG,
-    MAX_NUM_TRIES,
     ClientResponse,
     get_response_json,
     raise_for_status,
@@ -788,6 +787,15 @@ class NeMoGymChatCompletionCreateParamsNonStreaming(BaseModel):
 RATE_LIMIT_ERROR_CODES = [429, 502, 503, 504, 520]
 RETRY_ERROR_CODES = RATE_LIMIT_ERROR_CODES + [500]
 
+# Capped exponential backoff for _request_with_retry. A prior version kept the attempt budget
+# alive forever under a sustained 429/502/503/504/520 (raised the cap in the same iteration
+# it consumed a try), which let one hung provider retry indefinitely. Bounded to ~123s of
+# total sleep across 8 attempts -- long enough to ride out a short rate-limit window without
+# silently zeroing a result (see browsecomp_advanced_harness's JUDGE_BACKOFF_CAP_S for the
+# incident that taught us not to make this too short).
+MODEL_MAX_ATTEMPTS = 8
+MODEL_BACKOFF_CAP_S = 60
+
 
 class NeMoGymAsyncOpenAI(BaseModel):  # pragma: no cover
     """This is just a stub class that wraps around aiohttp"""
@@ -816,29 +824,26 @@ class NeMoGymAsyncOpenAI(BaseModel):  # pragma: no cover
         return await self._request_with_retry(**request_kwargs)
 
     async def _request_with_retry(self, **request_kwargs: Dict) -> ClientResponse:
-        max_num_tries = MAX_NUM_TRIES
-        tries = 0
-        while tries < max_num_tries:
-            tries += 1
+        for attempt in range(MODEL_MAX_ATTEMPTS):
             response = await request(**request_kwargs)
 
-            if response.status in RETRY_ERROR_CODES:
-                # If we hit a rate limit, we don't want to hit max num tries, so we increment both.
-                if response.status in RATE_LIMIT_ERROR_CODES:
-                    max_num_tries += 1
-
-                content = (await response.content.read()).decode()
-                kind = "rate_limit" if response.status in RATE_LIMIT_ERROR_CODES else "server_error"
-                print(
-                    f"[model_retry url={request_kwargs.get('url')} status={response.status} kind={kind} try={tries} max_tries={max_num_tries} error_msg={content[:200]}]",
-                    flush=True,
-                )
-                await sleep(0.5)
-                continue
-            else:
+            if response.status not in RETRY_ERROR_CODES:
                 return response
 
-        # We've exited the loop
+            # Tag on the exact status, not the RATE_LIMIT_ERROR_CODES bucket -- a 504 is a
+            # gateway timeout, not a rate limit, and grepping for "[model_retry_429]" should
+            # only ever surface true rate limits, even when a later attempt resolves it.
+            tag = "model_retry_429" if response.status == 429 else "model_retry_5xx"
+            content = (await response.content.read()).decode()
+            backoff_s = min(2**attempt, MODEL_BACKOFF_CAP_S)
+            print(
+                f"[{tag}] url={request_kwargs.get('url')} status={response.status} "
+                f"attempt={attempt + 1}/{MODEL_MAX_ATTEMPTS} backoff_s={backoff_s} error_msg={content[:200]}",
+                flush=True,
+            )
+            await sleep(backoff_s)
+
+        # Retry budget exhausted while still holding a retryable status.
         await raise_for_status(response)
 
     async def _raise_for_status(self, response: ClientResponse, request_kwargs: Dict[str, Any]) -> None:
