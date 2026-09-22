@@ -302,8 +302,9 @@ class TavilySearchAIOHTTPClient(BaseModel):
                 _abort_on_invalid_api_key("tavily", response.status, (await response.content.read()).decode())
 
             if response.status in RETRY_ERROR_CODES:
-                # If we hit a rate limit, we don't want to hit max num tries, so we increment both.
-                rate_limited = response.status in RATE_LIMIT_ERROR_CODES
+                # Only a true 429 gets an extended budget; 500/502/503/504/520 are
+                # real upstream/gateway failures and must still exhaust MAX_NUM_TRIES.
+                rate_limited = response.status == 429
                 if rate_limited:
                     max_num_tries += 1
                 _count_provider_retry(response.status)
@@ -370,9 +371,10 @@ class ExaAIOHTTPClient(BaseModel):
                 _abort_on_invalid_api_key("exa", response.status, (await response.content.read()).decode())
 
             if response.status in RETRY_ERROR_CODES:
-                rate_limited = response.status in RATE_LIMIT_ERROR_CODES
+                # Only a true 429 gets an extended budget; 500/502/503/504/520 are
+                # real upstream/gateway failures and must still exhaust MAX_NUM_TRIES.
+                rate_limited = response.status == 429
                 if rate_limited:
-                    # don't let rate limits burn the retry budget
                     max_num_tries += 1
                 _count_provider_retry(response.status)
                 content = (await response.content.read()).decode()
@@ -443,9 +445,10 @@ class YouAIOHTTPClient(BaseModel):
                 _abort_on_invalid_api_key("you", response.status, (await response.content.read()).decode())
 
             if response.status in RETRY_ERROR_CODES:
-                rate_limited = response.status in RATE_LIMIT_ERROR_CODES
+                # Only a true 429 gets an extended budget; 500/502/503/504/520 are
+                # real upstream/gateway failures and must still exhaust MAX_NUM_TRIES.
+                rate_limited = response.status == 429
                 if rate_limited:
-                    # don't let rate limits burn the retry budget
                     max_num_tries += 1
                 _count_provider_retry(response.status)
                 content = (await response.content.read()).decode()
