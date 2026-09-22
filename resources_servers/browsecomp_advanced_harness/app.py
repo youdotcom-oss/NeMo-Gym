@@ -45,7 +45,6 @@ from nemo_gym.base_resources_server import (
 from nemo_gym.config_types import ModelServerRef
 from nemo_gym.judge import JudgeError, call_judge
 from nemo_gym.openai_utils import (
-    RATE_LIMIT_ERROR_CODES,
     RETRY_ERROR_CODES,
     NeMoGymEasyInputMessage,
     NeMoGymResponse,
@@ -56,6 +55,10 @@ from resources_servers.browsecomp_advanced_harness.judge_prompt import JUDGE_PRO
 
 
 YouSearchMode = Literal["snippets", "highlights", "full_page", "eco", "lite"]
+
+# Ceiling on the search clients' 429-extended retry budget (Tavily/Exa/You). A sustained
+# 429 stream must still exhaust and raise, not retry forever.
+RATE_LIMIT_MAX_TRIES = 10
 
 
 class BrowseCompResourcesServerConfig(BaseResourcesServerConfig):
@@ -306,7 +309,9 @@ class TavilySearchAIOHTTPClient(BaseModel):
                 # real upstream/gateway failures and must still exhaust MAX_NUM_TRIES.
                 rate_limited = response.status == 429
                 if rate_limited:
-                    max_num_tries += 1
+                    # Extend the budget for real rate limits, but never past RATE_LIMIT_MAX_TRIES --
+                    # a sustained 429 stream must still exhaust and raise, not retry forever.
+                    max_num_tries = min(max_num_tries + 1, RATE_LIMIT_MAX_TRIES)
                 _count_provider_retry(response.status)
 
                 content = (await response.content.read()).decode()
@@ -375,7 +380,9 @@ class ExaAIOHTTPClient(BaseModel):
                 # real upstream/gateway failures and must still exhaust MAX_NUM_TRIES.
                 rate_limited = response.status == 429
                 if rate_limited:
-                    max_num_tries += 1
+                    # Extend the budget for real rate limits, but never past RATE_LIMIT_MAX_TRIES --
+                    # a sustained 429 stream must still exhaust and raise, not retry forever.
+                    max_num_tries = min(max_num_tries + 1, RATE_LIMIT_MAX_TRIES)
                 _count_provider_retry(response.status)
                 content = (await response.content.read()).decode()
                 tag = "exa_rate_limit" if rate_limited else "exa_retry"
@@ -449,7 +456,9 @@ class YouAIOHTTPClient(BaseModel):
                 # real upstream/gateway failures and must still exhaust MAX_NUM_TRIES.
                 rate_limited = response.status == 429
                 if rate_limited:
-                    max_num_tries += 1
+                    # Extend the budget for real rate limits, but never past RATE_LIMIT_MAX_TRIES --
+                    # a sustained 429 stream must still exhaust and raise, not retry forever.
+                    max_num_tries = min(max_num_tries + 1, RATE_LIMIT_MAX_TRIES)
                 _count_provider_retry(response.status)
                 content = (await response.content.read()).decode()
                 tag = "you_rate_limit" if rate_limited else "you_retry"
