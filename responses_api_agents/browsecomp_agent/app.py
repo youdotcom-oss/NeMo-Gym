@@ -283,6 +283,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
         full_trajectory = []  # never-trimmed; mirrors new_outputs appends across resets
         usage = None
         step = 0
+        hit_max_steps = False
         model_server_cookies = None  # update the cookies on every model response
         resources_server_cookies = request.cookies  # update the cookies on every resources server response
 
@@ -666,6 +667,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
             # Check if max steps is not None and if we have exhausted it.
             if self.config.max_steps and step >= self.config.max_steps:
                 print(f"[browsecomp][max_steps][{qid}] step={step} max_steps={self.config.max_steps}", flush=True)
+                hit_max_steps = True
                 break
 
         # --- Board-answer fallback (ported from bc_frankie 5099589): if the run
@@ -737,6 +739,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
         # NeMoGymResponse(Response) has extra="allow", so these round-trip to /verify.
         model_response.reset_count = reset_count
         model_response.num_tool_calls = num_tool_calls
+        model_response.hit_max_steps = hit_max_steps
         model_response.pre_reset_warning_steps = pre_reset_warning_steps
         return model_response
 
@@ -789,12 +792,17 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                 # Retry if the model's LAST content-bearing turn was empty after <think>-strip.
                 # (Keyed on the last assistant message, matching bc_frankie, NOT the concatenated
                 # output_text — a final think-only turn retries even if an earlier turn had text.)
+                # Exception: a rollout that hit max_steps already spent its full step budget —
+                # retrying would spend max_steps again for a task that's already this hard, so
+                # that case is treated as a genuine failure instead of retried from scratch.
                 response_json = await get_response_json(response)
                 last_response_json = response_json
-                raw_output_text = self._last_message_text(NeMoGymResponse.model_validate(response_json))
+                validated_response = NeMoGymResponse.model_validate(response_json)
+                raw_output_text = self._last_message_text(validated_response)
                 cleaned_output_text = re.sub(r"<think>.*?</think>", "", raw_output_text, flags=re.DOTALL).strip()
+                hit_max_steps = getattr(validated_response, "hit_max_steps", False)
                 # Need to get last_verify_response if all attempts are exhausted
-                if not cleaned_output_text and attempt != self.config.max_run_retries - 1:
+                if not cleaned_output_text and not hit_max_steps and attempt != self.config.max_run_retries - 1:
                     print(
                         f"[browsecomp][retry][{qid}] attempt={attempt + 1}/{self.config.max_run_retries} "
                         f"reason=empty_output_after_think_strip",

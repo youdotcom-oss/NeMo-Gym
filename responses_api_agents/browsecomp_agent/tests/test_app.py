@@ -478,3 +478,44 @@ class TestApp:
 
         assert agent.server_client.post.call_count == 4  # retry fired -> attempt 1 + verify
         assert result.reward == 1.0
+
+    async def test_run_does_not_retry_empty_output_after_hitting_max_steps(self) -> None:
+        """A rollout that exhausted its step budget already spent max_steps -- retrying would
+        spend it again, so an empty-after-<think>-strip last turn is verified as a failure
+        instead of retried, unlike an empty last turn from a rollout well under budget."""
+        agent = BrowsecompAgent(config=_make_config(max_run_retries=2), server_client=MagicMock(spec=ServerClient))
+
+        attempt0 = _make_model_response([_make_msg("<think>ran out of steps</think>", msg_id="m1")])
+        attempt0["hit_max_steps"] = True
+        verify_json = {
+            "reward": 0.0,
+            "response": attempt0,
+            "responses_create_params": {"input": [{"role": "user", "content": "q"}]},
+        }
+
+        def _http(read_bytes: bytes | None = None) -> MagicMock:
+            m = MagicMock()
+            m.ok = True
+            m.cookies = {}
+            if read_bytes is not None:
+                m.read = AsyncMock(return_value=read_bytes)
+            return m
+
+        # seed_session, /v1/responses (attempt 0), /verify -- no retry call
+        agent.server_client.post = AsyncMock(
+            side_effect=[
+                _http(),
+                _http(json.dumps(attempt0).encode()),
+                _http(json.dumps(verify_json).encode()),
+            ]
+        )
+
+        request_mock = MagicMock()
+        request_mock.cookies = {}
+        body = BrowsecompAgentRunRequest(
+            responses_create_params=NeMoGymResponseCreateParamsNonStreaming(input=[{"role": "user", "content": "q"}])
+        )
+        result = await agent.run(request_mock, body)
+
+        assert agent.server_client.post.call_count == 3  # no retry -> verified on attempt 0
+        assert result.reward == 0.0
