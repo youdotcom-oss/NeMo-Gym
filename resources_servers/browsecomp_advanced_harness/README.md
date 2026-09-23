@@ -35,6 +35,19 @@ responses_api_models/vllm_model/configs/vllm_model.yaml"
 ng_run "+config_paths=[${config_paths}]"
 ```
 
+## Diagnosing latency and 429/504s during a run
+
+Every HTTP call in Gym (model, judge, You.com/Tavily/Exa search) is timed and status-counted
+in `nemo_gym.http_stats`, which each process dumps to `<log_dir>/http_stats/*.json` (or
+`.nemo_gym/http_stats/*.json` if `nemo_gym_log_dir` isn't set) every 50 requests, so it's
+readable while the run is still going:
+
+```bash
+cat .nemo_gym/http_stats/*.json   # steps are pre-sorted by total time spent -- the bottleneck first
+```
+
+Every 429/504/5xx is also logged inline as `[http_status] step=... status=...`, even when a
+retry later succeeds.
 
 # Licensing information
 Code: ?
