@@ -440,6 +440,13 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
             # --- Check context reset threshold (post-call fallback; used when
             # save_model_call_using_vllm_tokenize_endpoint is off) ---
             prompt_tokens = model_response.usage.input_tokens if model_response.usage else 0
+            print(
+                f"[browsecomp][context_check][{qid}] step={step} usage_present={model_response.usage is not None} "
+                f"prompt_tokens={prompt_tokens} reset_threshold={reset_threshold} "
+                f"would_reset={bool(reset_threshold and prompt_tokens > reset_threshold)} "
+                f"reset_count_so_far={reset_count}",
+                flush=True,
+            )
             pre_reset_nudge_due = False
             if (
                 reset_threshold
