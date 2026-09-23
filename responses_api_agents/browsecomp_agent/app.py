@@ -775,6 +775,13 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                     url_path=self.url_path_for_run("/v1/responses", body),
                     json=body.responses_create_params,
                     cookies=cookies,
+                    # This call wraps an entire (unstreamed) up-to-max_steps trajectory, so it can
+                    # legitimately run far past the global sock_read default -- that default exists
+                    # for streaming model calls, where each chunk resets the clock. Here there are
+                    # no chunks, so the default fires on healthy long rollouts, and server_utils's
+                    # retry-on-timeout then launches a second live trajectory on top of the first.
+                    # The real ceiling is max_steps, which the agent already enforces.
+                    timeout=aiohttp.ClientTimeout(sock_connect=15.0, sock_read=None),
                 )
                 await raise_for_status(response)
                 cookies = response.cookies

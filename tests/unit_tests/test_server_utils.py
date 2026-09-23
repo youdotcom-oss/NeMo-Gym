@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import asyncio
 import socket
 from unittest.mock import AsyncMock, MagicMock
 
@@ -23,6 +24,7 @@ from nemo_gym.global_config import (
     NEMO_GYM_CONFIG_PATH_ENV_VAR_NAME,
 )
 from nemo_gym.server_utils import (
+    MAX_NUM_TRIES,
     BaseServer,
     BaseServerConfig,
     ConnectionError,
@@ -33,6 +35,7 @@ from nemo_gym.server_utils import (
     SimpleServer,
     _make_keepalive_socket_factory,
     initialize_ray,
+    request,
 )
 
 
@@ -148,6 +151,25 @@ class TestServerUtils:
             url_path="blah blah",
         )
         assert "my mock response" == actual_response
+
+    async def test_request_internal_bounds_retries_and_raises(self, monkeypatch: MonkeyPatch) -> None:
+        # Regression test: an `_internal=True` call (every ServerClient call, since
+        # ServerClient.request hardcodes it) used to have its whole retry budget gated behind
+        # `if not _internal`, so a persistently-failing internal call retried forever instead of
+        # raising after MAX_NUM_TRIES. Wrapped in wait_for so a regression fails fast (timeout)
+        # instead of hanging the suite.
+        client_mock = MagicMock()
+        client_mock.request = AsyncMock(side_effect=TimeoutError("simulated sock_read timeout"))
+        monkeypatch.setattr(nemo_gym.server_utils, "get_global_aiohttp_client", lambda: client_mock)
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+        with raises(TimeoutError):
+            await asyncio.wait_for(
+                request(method="POST", url="http://example.invalid/v1/responses", _internal=True),
+                timeout=5,
+            )
+
+        assert client_mock.request.await_count == MAX_NUM_TRIES
 
     def test_BaseServer_load_config_from_global_config(self, monkeypatch: MonkeyPatch) -> None:
         # Clear any lingering env vars.

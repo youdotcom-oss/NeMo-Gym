@@ -28,6 +28,7 @@ from pathlib import Path
 from time import time
 from typing import Any, Dict, Iterator, List, Literal, Optional, Tuple, Union
 
+import aiohttp
 import orjson
 from omegaconf import OmegaConf
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -1035,7 +1036,24 @@ Aggregate metrics: {aggregate_metrics_fpath}""")
 
         async def _post_subroutine(row: Dict) -> Tuple[Dict, Dict]:
             async with semaphore:
-                res = await server_client.post(server_name=row["agent_ref"]["name"], url_path="/run", json=row)
+                res = await server_client.post(
+                    server_name=row["agent_ref"]["name"],
+                    url_path="/run",
+                    json=row,
+                    # This call wraps an entire (unstreamed) agent trajectory, so it can
+                    # legitimately run past the global sock_read default -- that default
+                    # exists for calls that return partial data as they go, where each
+                    # chunk resets the clock. Here there are no chunks: the client gets
+                    # zero bytes until the whole trajectory is done, so sock_read acts as
+                    # a hard ceiling on total silence rather than a stuck-read detector.
+                    # Hitting it makes server_utils's retry-on-timeout re-POST /run --
+                    # launching a second, independent trajectory for the same task while
+                    # the first keeps running server-side unaware its client gave up, and
+                    # discarding whichever response arrives later. Same fix and reasoning
+                    # as responses_api_agents/browsecomp_agent/app.py's own call one layer
+                    # down, to its model server.
+                    timeout=aiohttp.ClientTimeout(sock_connect=15.0, sock_read=None),
+                )
                 try:
                     await raise_for_status(res)
                 except Exception:
