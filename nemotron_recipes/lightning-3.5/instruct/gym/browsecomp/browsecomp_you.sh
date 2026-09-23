@@ -94,4 +94,5 @@ gym eval run \
   ${OPENAI_PROJECT:+"++policy_model.responses_api_models.vllm_model.default_headers={OpenAI-Project:$OPENAI_PROJECT}"} \
   "++overwrite_metrics_conflicts=true" \
   ${LIMIT:+--limit "$LIMIT"} \
-  ${PARALLEL:+--concurrency "$PARALLEL"}
+  ${PARALLEL:+--concurrency "$PARALLEL"} \
+  "$@"
