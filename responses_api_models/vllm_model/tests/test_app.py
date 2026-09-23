@@ -1853,7 +1853,6 @@ class TestApp:
                 "role": "assistant",
                 "content": "Sure, one sec.",
                 "reasoning_content": "First reasoning item",
-                "reasoning": "First reasoning item",
             },
             {"content": [{"text": "cool", "type": "text"}], "role": "user"},
             {
@@ -1945,7 +1944,6 @@ class TestApp:
                 "role": "assistant",
                 "content": "Sure, one sec.",
                 "reasoning_content": "First reasoning item",
-                "reasoning": "First reasoning item",
             },
             {"content": [{"text": "cool", "type": "text"}], "role": "user"},
             {
@@ -1969,7 +1967,6 @@ class TestApp:
                     },
                 ],
                 "reasoning_content": "Gathering order status and delivery info...",
-                "reasoning": "Gathering order status and delivery info...",
             },
             {"content": [{"text": "user", "type": "text"}], "role": "user"},
         ]
@@ -2058,7 +2055,6 @@ class TestApp:
                 "role": "assistant",
                 "content": "Sure, one sec.",
                 "reasoning_content": "First reasoning item",
-                "reasoning": "First reasoning item",
             },
             {"content": [{"text": "cool", "type": "text"}], "role": "user"},
             {
@@ -2082,14 +2078,12 @@ class TestApp:
                     },
                 ],
                 "reasoning_content": "Gathering order status and delivery info...",
-                "reasoning": "Gathering order status and delivery info...",
             },
             {"content": [{"text": "user", "type": "text"}], "role": "user"},
             {
                 "role": "assistant",
                 "content": "",
                 "reasoning_content": "None content test",
-                "reasoning": "None content test",
             },
             {"content": [{"text": "user", "type": "text"}], "role": "user"},
         ]
@@ -2304,7 +2298,6 @@ class TestApp:
                 "role": "assistant",
                 "content": "Sure, one sec.",
                 "reasoning_content": "First reasoning item",
-                "reasoning": "First reasoning item",
             },
             {"content": [{"text": "cool", "type": "text"}], "role": "user"},
             {
@@ -2396,7 +2389,6 @@ class TestApp:
                 "role": "assistant",
                 "content": "Sure, one sec.",
                 "reasoning_content": "First reasoning item",
-                "reasoning": "First reasoning item",
             },
             {"content": [{"text": "cool", "type": "text"}], "role": "user"},
             {
@@ -2420,7 +2412,6 @@ class TestApp:
                     },
                 ],
                 "reasoning_content": "Gathering order status and delivery info...",
-                "reasoning": "Gathering order status and delivery info...",
             },
             {"content": [{"text": "user", "type": "text"}], "role": "user"},
         ]
@@ -2509,7 +2500,6 @@ class TestApp:
                 "role": "assistant",
                 "content": "Sure, one sec.",
                 "reasoning_content": "First reasoning item",
-                "reasoning": "First reasoning item",
             },
             {"content": [{"text": "cool", "type": "text"}], "role": "user"},
             {
@@ -2533,14 +2523,12 @@ class TestApp:
                     },
                 ],
                 "reasoning_content": "Gathering order status and delivery info...",
-                "reasoning": "Gathering order status and delivery info...",
             },
             {"content": [{"text": "user", "type": "text"}], "role": "user"},
             {
                 "role": "assistant",
                 "content": "",
                 "reasoning_content": "None content test",
-                "reasoning": "None content test",
             },
             {"content": [{"text": "user", "type": "text"}], "role": "user"},
         ]
@@ -3385,7 +3373,7 @@ class TestVLLMConverter:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _make_reasoning_history_model(*, preserve_content: bool) -> VLLMModel:
+def _make_reasoning_history_model(*, preserve_content: bool, interleaved_reasoning: bool = True) -> VLLMModel:
     config = VLLMModelConfig(
         host="0.0.0.0",
         port=8080,
@@ -3396,7 +3384,7 @@ def _make_reasoning_history_model(*, preserve_content: bool) -> VLLMModel:
         model="dummy-model",
         return_token_id_information=False,
         uses_reasoning_parser=True,
-        uses_interleaved_reasoning=True,
+        uses_interleaved_reasoning=interleaved_reasoning,
         preserve_reasoning_in_assistant_content=preserve_content,
     )
     return VLLMModel(config=config, server_client=MagicMock(spec=ServerClient))
@@ -3423,7 +3411,21 @@ class TestAssistantReasoningHistoryPreprocess:
         assistant = result["messages"][1]
         assert assistant["content"] == "\n## Action:\nact"
         assert assistant["reasoning_content"] == "reason"
-        assert assistant["reasoning"] == "reason"
+        # `reasoning` is an alias of `reasoning_content` on some OpenAI-compatible gateways
+        # (e.g. api.inference.wandb.ai): sending both is a 400 ("duplicate field
+        # reasoning_content"), not two independent fields. Only one may be set.
+        assert "reasoning" not in assistant
+
+    def test_interleaved_reasoning_false_drops_reasoning_fields(self) -> None:
+        model = _make_reasoning_history_model(preserve_content=False, interleaved_reasoning=False)
+        result = model._preprocess_chat_completion_create_params(
+            MagicMock(), self._body("<think>reason</think>\n## Action:\nact")
+        )
+
+        assistant = result["messages"][1]
+        assert assistant["content"] == "\n## Action:\nact"
+        assert "reasoning_content" not in assistant
+        assert "reasoning" not in assistant
 
     def test_preserve_mode_keeps_string_history_byte_for_byte(self) -> None:
         model = _make_reasoning_history_model(preserve_content=True)
