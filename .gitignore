@@ -234,6 +234,9 @@ env.yaml
 # Claude Code agent runtime artifacts
 **/.claude_node/
 
+# Default http_stats dump dir (nemo_gym.http_stats) when nemo_gym_log_dir isn't set
+.nemo_gym/
+
 # cvdp generic agent provisioned harness deps (portable python/node + CLIs, built at runtime)
 responses_api_agents/cvdp_agent/deps/
 resources_servers/cvdp/data/gym_agentic_code_generation_no_commercial.jsonl
