@@ -52,7 +52,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from requests.exceptions import ConnectionError
 from starlette.middleware.sessions import SessionMiddleware
 
-from nemo_gym import WORKING_DIR
+from nemo_gym import WORKING_DIR, http_stats
 from nemo_gym.config_types import (
     ROLLOUT_PATH_PREFIX,
     BaseRunServerInstanceConfig,
@@ -230,13 +230,22 @@ async def request(
         kwargs["headers"]["Content-Type"] = "application/json"
 
     client = get_global_aiohttp_client()
+    step_key = http_stats.step_key(method, url)
     num_tries = 1
     retries = 0
     retry_start = time.monotonic()
     while True:
+        handle = http_stats.start(step_key)
         try:
-            return await client.request(method=method, url=url, **kwargs)
+            response = await client.request(method=method, url=url, **kwargs)
+            # getattr, not response.status: some test doubles return a bare object here.
+            status = getattr(response, "status", None)
+            http_stats.finish(handle, status=status)
+            if status in http_stats.NOTABLE_STATUSES:
+                print(f"[http_status] step={step_key} status={status}", flush=True)
+            return response
         except ServerDisconnectedError:
+            http_stats.finish(handle, status=None)
             global _NUM_SERVER_DISCONNECTED_ERROR
             _NUM_SERVER_DISCONNECTED_ERROR += 1
             retries += 1
@@ -249,6 +258,7 @@ async def request(
 
             await asyncio.sleep(0.5)
         except ClientOSError:
+            http_stats.finish(handle, status=None)
             global _NUM_CLIENT_OS_ERROR
             _NUM_CLIENT_OS_ERROR += 1
             retries += 1
@@ -261,6 +271,7 @@ async def request(
 
             await asyncio.sleep(0.5)
         except Exception as e:
+            http_stats.finish(handle, status=None)
             if _GLOBAL_AIOHTTP_CLIENT_REQUEST_DEBUG:
                 print_exc()
 
@@ -282,6 +293,9 @@ Sleeping 0.5s and retrying...
 async def raise_for_status(response: ClientResponse) -> None:  # pragma: no cover
     if not response.ok:
         content = await response.content.read()
+        print(
+            f"[http_error] status={response.status} url={response.request_info.url} body={content[:500]!r}", flush=True
+        )
         if _GLOBAL_AIOHTTP_CLIENT_REQUEST_DEBUG:
             print(f"""Request info: {response.request_info}
 Response content: {content}""")
