@@ -275,18 +275,20 @@ async def request(
             if _GLOBAL_AIOHTTP_CLIENT_REQUEST_DEBUG:
                 print_exc()
 
-            # Don't increment internal since we know we are ok. If we are not, the head server will shut everything down anyways.
+            # Bound the retry budget regardless of `_internal` -- an internal call that keeps
+            # failing is not "ok", and a silent infinite retry on a non-idempotent call (e.g. an
+            # agent's own /v1/responses, which starts a fresh trajectory) duplicates work forever.
+            # `_internal` only controls log verbosity below.
             if not _internal:
                 print(
                     f"""Hit an exception while making a request (try {num_tries}): {type(e)}: {e}
 Sleeping 0.5s and retrying...
 """
                 )
-                if num_tries >= MAX_NUM_TRIES:
-                    raise e
+            if num_tries >= MAX_NUM_TRIES:
+                raise e
 
-                num_tries += 1
-
+            num_tries += 1
             await asyncio.sleep(0.5)
 
 

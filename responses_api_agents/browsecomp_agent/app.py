@@ -107,7 +107,9 @@ PROGRESS_SYSTEM_ADDENDUM = (
     "• Search angles tried — exhausted angles and what they yielded, so you "
     "don't repeat them.\n"
     "• Working hypothesis (UNVERIFIED — re-check every constraint before "
-    "committing; do not treat as settled).\n\n"
+    "committing; do not treat as settled).\n"
+    "{evidence}"
+    "\n"
     "After a context reset: treat any working hypothesis on the board as a "
     "guess to re-test from the confirmed facts, NOT a conclusion. If the same "
     "hypothesis has led for 2+ segments without confirming all constraints, "
@@ -116,6 +118,18 @@ PROGRESS_SYSTEM_ADDENDUM = (
     "last chance to save state — but do not rely on it alone; update the "
     "board whenever something is settled or ruled out.\n\n"
     "### Current board:\n{progress}"
+)
+
+# Rendered into the board only when the harness exposes bash_command, i.e. when
+# the resources server runs workspace: per_session. In that mode search/browse
+# write every page under the session workspace and return its `pages/...` path,
+# so the pages outlive a context reset even though the conversation does not —
+# recording the path turns post-reset recovery into a grep instead of a re-search.
+PROGRESS_EVIDENCE_ADDENDUM = (
+    "• Evidence files — the `pages/...` path returned with each search or browse "
+    "result, kept next to the fact it supports. These files survive a context "
+    "reset: re-read them with `bash_command` rather than searching again, and "
+    "`manifest.tsv` lists every page fetched this session.\n"
 )
 
 PRE_RESET_BOARD_NUDGE = (
@@ -231,6 +245,19 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
             return int(config.max_context_tokens * config.context_reset_pct)
         return 0
 
+    # Rough chars-per-token heuristic (English/code mixed text) used as a LOCAL,
+    # always-available backstop for the post-call context-reset check below.
+    # Root cause of resets not firing: the check depended entirely on the model
+    # server's reported `usage.input_tokens`, which is `None` whenever the upstream
+    # call errors with "context length exceeded" -- vllm_model/app.py swallows that
+    # error and returns a fake empty completion (no usage at all) rather than
+    # propagating it, so the real overflow that should trigger a reset instead
+    # silently disables the check (`prompt_tokens` falls back to 0). Estimating
+    # from what we know we're sending removes the dependency on that field
+    # entirely; it doesn't need to be exact, only to reliably cross the threshold
+    # when the real prompt does.
+    _CHARS_PER_TOKEN_ESTIMATE = 4
+
     @staticmethod
     def _last_message_text(response: NeMoGymResponse) -> str:
         """Text of the most-recent assistant message item that has non-empty content, walking
@@ -296,6 +323,10 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
         pre_reset_warning_steps = []
         progress_sys_idx = None
         progress_base_system = ""
+        has_bash_tool = any(
+            (t["name"] if isinstance(t, dict) else t.name) == "bash_command" for t in (body.tools or [])
+        )
+        progress_evidence = PROGRESS_EVIDENCE_ADDENDUM if has_bash_tool else ""
 
         def _render_progress_system():
             """Rebuild the system message with the current board."""
@@ -303,7 +334,10 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                 "(empty — start by listing the question's constraints; see the format above)"
             )
             body.input[progress_sys_idx] = body.input[progress_sys_idx].model_copy(
-                update={"content": progress_base_system + PROGRESS_SYSTEM_ADDENDUM.format(progress=board_text)}
+                update={
+                    "content": progress_base_system
+                    + PROGRESS_SYSTEM_ADDENDUM.format(progress=board_text, evidence=progress_evidence)
+                }
             )
 
         def _pre_reset_kept_desc():
@@ -439,43 +473,60 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
 
             # --- Check context reset threshold (post-call fallback; used when
             # save_model_call_using_vllm_tokenize_endpoint is off) ---
-            prompt_tokens = model_response.usage.input_tokens if model_response.usage else 0
+            # Root cause of resets not firing in production: this used to trust
+            # model_response.usage.input_tokens alone, and treated a missing usage
+            # as "0 tokens, nothing to worry about". That field is None whenever the
+            # upstream call 400s with "context length exceeded" -- vllm_model
+            # swallows that error and returns a fake empty completion with no usage
+            # at all (see responses_api_models/vllm_model/app.py's
+            # is_out_of_context_length handling) rather than propagating it, so the
+            # real overflow that most needs a reset instead silently disabled the
+            # check. Only fall back to a local char-count estimate (always
+            # available, immune to the provider swallowing anything) when usage is
+            # genuinely missing -- when it IS present, trust it as before, so a
+            # deliberately-small test/production threshold still behaves exactly
+            # per the provider's own reported count.
+            if model_response.usage is not None:
+                estimated_prompt_tokens = model_response.usage.input_tokens
+            else:
+                try:
+                    new_body_chars = len(new_body.model_dump_json())
+                except Exception:
+                    new_body_chars = 0
+                estimated_prompt_tokens = new_body_chars // self._CHARS_PER_TOKEN_ESTIMATE
+            print(
+                f"[browsecomp][context_check][{qid}] step={step} usage_present={model_response.usage is not None} "
+                f"estimated_prompt_tokens={estimated_prompt_tokens} reset_threshold={reset_threshold} "
+                f"would_reset={bool(reset_threshold and estimated_prompt_tokens > reset_threshold)} "
+                f"reset_count_so_far={reset_count}",
+                flush=True,
+            )
             pre_reset_nudge_due = False
             if (
                 reset_threshold
-                and prompt_tokens > reset_threshold
+                and estimated_prompt_tokens > reset_threshold
                 and (max_reset_count is None or reset_count < max_reset_count)
             ):
-                if self.config.progress and not reset_armed:
-                    # One warned turn: process this completion normally, inject the
-                    # save-the-board warning after its tool results, and reset at
-                    # the end of the NEXT turn. (ported from bc_frankie 8cdd075)
+                # Arm; never trim here. This used to wipe and `continue` before the
+                # completion was consumed below, throwing away the generation that
+                # tripped the threshold -- including a final answer message, which
+                # is exactly the turn a long trajectory ends on. The armed reset
+                # fires at the end of an iteration instead, once the turn has been
+                # recorded and its tool calls have run.
+                if not reset_armed:
                     reset_armed = True
-                    pre_reset_nudge_due = True
-                    pre_reset_warning_steps.append(step)
+                    # With the board on, the model gets ONE warned turn to save it,
+                    # so the reset slips to the end of the NEXT iteration; without
+                    # it there is nothing to save and the reset fires this one.
+                    # (ported from bc_frankie 8cdd075)
+                    pre_reset_nudge_due = self.config.progress
+                    if self.config.progress:
+                        pre_reset_warning_steps.append(step)
                     print(
-                        f"[browsecomp][progress][{qid}] step={step} tokens={prompt_tokens} > {reset_threshold} — "
-                        f"board-save warning due; reset fires after next turn",
+                        f"[browsecomp][progress][{qid}] step={step} tokens={estimated_prompt_tokens} > {reset_threshold} — "
+                        f"reset armed; fires {'after next turn' if self.config.progress else 'at end of this turn'}",
                         flush=True,
                     )
-                elif not self.config.progress:
-                    reset_count += 1
-                    reset_steps.append(step)
-                    if self.config.snap_dir:
-                        self._save_snapshot(
-                            messages=body.input + new_outputs,
-                            task_index=task_index,
-                            attempt=attempt,
-                            reset_count=reset_count,
-                            is_final=False,
-                        )
-                    if self.config.context_reset_keep_rounds > 0:
-                        new_outputs = self._extract_last_rounds(new_outputs)
-                    else:
-                        new_outputs = []
-                    continue
-                # else: the warned board-save turn is in flight — the armed reset
-                # fires at the end of this iteration, once its tool calls have run.
 
             output = model_response.output
             new_outputs.extend(output)
@@ -775,6 +826,13 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                     url_path=self.url_path_for_run("/v1/responses", body),
                     json=body.responses_create_params,
                     cookies=cookies,
+                    # This call wraps an entire (unstreamed) up-to-max_steps trajectory, so it can
+                    # legitimately run far past the global sock_read default -- that default exists
+                    # for streaming model calls, where each chunk resets the clock. Here there are
+                    # no chunks, so the default fires on healthy long rollouts, and server_utils's
+                    # retry-on-timeout then launches a second live trajectory on top of the first.
+                    # The real ceiling is max_steps, which the agent already enforces.
+                    timeout=aiohttp.ClientTimeout(sock_connect=15.0, sock_read=None),
                 )
                 await raise_for_status(response)
                 cookies = response.cookies

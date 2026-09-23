@@ -384,6 +384,53 @@ class TestApp:
         assert json.loads(lines[0])["reset_steps"] == [2]
         assert len(lines) == 1 + len(body.input) + len(result.output)
 
+    async def test_reset_fires_when_usage_is_missing(self) -> None:
+        """Regression test: vllm_model returns a fake empty completion with NO usage at all
+        when the upstream call 400s on context-length-exceeded (see
+        responses_api_models/vllm_model/app.py's is_out_of_context_length handling) instead of
+        propagating the error. The old post-call reset check trusted
+        `model_response.usage.input_tokens` unconditionally, defaulting a missing usage to 0
+        tokens -- exactly backwards, since a missing usage is the one signal most likely to mean
+        the context is already too large. A reset must still fire from the local char-count
+        estimate even when the provider gives no usage signal at all."""
+        agent = BrowsecompAgent(
+            config=_make_config(
+                context_reset_tokens=1,  # threshold 1 -> any nonzero estimate resets
+                context_reset_keep_rounds=0,
+                nudge_steps=False,
+            ),
+            server_client=MagicMock(spec=ServerClient),
+        )
+        # Turn 1: real usage, reported as 0 tokens -> must NOT reset (usage is trusted when present).
+        model1 = _make_model_response_with_usage([_make_fn_call("search", call_id="c1")], input_tokens=0)
+        # Turn 2: the swallowed-error fallback shape -- empty output, no usage at all.
+        model2 = _make_model_response([])
+        model3 = _make_model_response_with_usage([_make_msg("Exact Answer: RIGHT")], input_tokens=0)
+
+        http = MagicMock()
+        http.ok = True
+        http.status = 200
+        http.cookies = {}
+        http.read = AsyncMock(
+            side_effect=[json.dumps(model1).encode(), json.dumps(model2).encode(), json.dumps(model3).encode()]
+        )
+        http.content.read = AsyncMock(return_value=b'{"results_string": "tool result"}')
+        agent.server_client.post = AsyncMock(return_value=http)
+
+        request_mock = MagicMock()
+        request_mock.cookies = {}
+        response_mock = MagicMock()
+        response_mock.set_cookie = MagicMock()
+
+        body = NeMoGymResponseCreateParamsNonStreaming(input=[{"role": "user", "content": "q"}])
+        result = await agent.responses(request_mock, response_mock, body)
+
+        # Reset fired on the usage=None turn (not turn 1, where usage=0 was trusted), and the
+        # rollout still recovered to a real final answer instead of looping on the empty response.
+        assert result.reset_count == 1
+        assert result.output[-1].type == "message"
+        assert result.output[-1].content[0].text == "Exact Answer: RIGHT"
+
     # ---- _last_message_text (bc_frankie last-message retry parity) ----
 
     def test_last_message_text_returns_final_answer(self) -> None:

@@ -38,7 +38,7 @@ export BROWSECOMP_SUBSET_N=100
 
 # Used judge: GLM-5.1
 BROWSECOMP_JUDGE_MODEL="${BROWSECOMP_JUDGE_MODEL:?}"
-YDC_API_KEY="${YDC_API_KEY:?export YDC_API_KEY (one key, or [k1,k2] for several)}"
+export YDC_API_KEY="${YDC_API_KEY:?export YDC_API_KEY (one key, or [k1,k2] for several)}"
 
 # The domain list search skips. Which domains are on it changes search coverage,
 # so results shift if you swap in a different list.
@@ -79,7 +79,6 @@ gym eval run \
   "++$HARNESS.judge_model_server.name=Qwen3-235B-A22B-Instruct-2507-FP8" \
   "++$HARNESS.search_provider=you" \
   "++$HARNESS.you_search_mode=highlights" \
-  "++$HARNESS.ydc_api_key=$YDC_API_KEY" \
   "++$HARNESS.exclude_domains_file_path=$EXCLUDE_JSON" \
   "++$AGENT.save_model_call_using_vllm_tokenize_endpoint=false" \
   "++$POLICY.chat_template_kwargs={enable_thinking: true}" \

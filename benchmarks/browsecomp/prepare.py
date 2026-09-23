@@ -78,6 +78,8 @@ TOOLS = [
             "All queries will be searched in parallel. "
             "If you want to search with multiple keywords, "
             "put them in a single query. "
+            "Each query must be at most 400 characters AND at most 50 words; "
+            "queries over either limit are rejected without being searched. "
             "Each result's full raw content is saved to "
             "pages/<idx>_search_<slug>_rN.txt under the current workspace; "
             "the tool response returns the per-result title, URL, snippet, "
