@@ -15,6 +15,7 @@
 import hashlib
 import json
 import re
+import time
 import traceback
 from pathlib import Path
 from typing import List, Optional
@@ -666,7 +667,10 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
 
             # Check if max steps is not None and if we have exhausted it.
             if self.config.max_steps and step >= self.config.max_steps:
-                print(f"[browsecomp][max_steps][{qid}] step={step} max_steps={self.config.max_steps}", flush=True)
+                print(
+                    f"[browsecomp][max_steps][{qid}] ts={time.time()} step={step} max_steps={self.config.max_steps}",
+                    flush=True,
+                )
                 hit_max_steps = True
                 break
 
