@@ -38,7 +38,7 @@ export BROWSECOMP_SUBSET_N=100
 
 # Used judge: GLM-5.1
 BROWSECOMP_JUDGE_MODEL="${BROWSECOMP_JUDGE_MODEL:?}"
-YDC_API_KEY="${YDC_API_KEY:?export YDC_API_KEY (one key, or [k1,k2] for several)}"
+export YDC_API_KEY="${YDC_API_KEY:?export YDC_API_KEY (one key, or [k1,k2] for several)}"
 
 # The domain list search skips. Which domains are on it changes search coverage,
 # so results shift if you swap in a different list.
@@ -49,8 +49,16 @@ EXCLUDE_JSON="${EXCLUDE_JSON:-$HERE/exclude_domains.json}"
 QWEN=Qwen3-235B-A22B-Instruct-2507-FP8.responses_api_models.vllm_model
 HARNESS=browsecomp_benchmark_resources_server.resources_servers.browsecomp_advanced_harness
 AGENT=browsecomp_benchmark_agent.responses_api_agents.browsecomp_agent
-# The agent runs on this derived node, not policy_model, so thinking is set here.
-POLICY=policy_model_no_interleaved_reasoning.responses_api_models.vllm_model
+# The agent's model_server.name may be policy_model or a derived node (e.g.
+# policy_model_no_interleaved_reasoning) depending on benchmarks/browsecomp/config.yaml.
+# Read whichever one is actually active so the thinking overrides below always land on
+# it — hardcoding the derived node here left `policy_model` runs with neither
+# enable_thinking nor skip_special_tokens set, an unintended confound between the two.
+CONFIG_YAML="${CONFIG_YAML:-benchmarks/browsecomp/config.yaml}"
+POLICY_NODE="${POLICY_NODE:-$(awk '/^ *model_server:/{f=1} f&&/^ *name:/{print $2; exit}' "$CONFIG_YAML")}"
+: "${POLICY_NODE:?could not resolve model_server.name from $CONFIG_YAML; set POLICY_NODE=}"
+POLICY=$POLICY_NODE.responses_api_models.vllm_model
+echo "policy model server node: $POLICY_NODE"
 
 # prepare has no --model-type flag, so vllm_model.yaml is composed via --config.
 # Pin Gym to the commit the tech report numbers were produced with. Set PIN_GYM=0 to
@@ -79,7 +87,6 @@ gym eval run \
   "++$HARNESS.judge_model_server.name=Qwen3-235B-A22B-Instruct-2507-FP8" \
   "++$HARNESS.search_provider=you" \
   "++$HARNESS.you_search_mode=highlights" \
-  "++$HARNESS.ydc_api_key=$YDC_API_KEY" \
   "++$HARNESS.exclude_domains_file_path=$EXCLUDE_JSON" \
   "++$AGENT.save_model_call_using_vllm_tokenize_endpoint=false" \
   "++$POLICY.chat_template_kwargs={enable_thinking: true}" \

@@ -22,9 +22,12 @@ browsecomp_benchmark_resources_server:
       domain: agent
       debug: false
       # Search/browse backend: "you" (default), "tavily", or "exa". Override per-run with
-      # ++...browsecomp_advanced_harness.search_provider=exa (+ exa_api_key=[...])
-      # ++...browsecomp_advanced_harness.search_provider=tavily (+ tavily_api_key=[...]).
+      # ++...browsecomp_advanced_harness.search_provider=exa (+ export EXA_API_KEY=...).
+      # Keys resolve from the environment at config load, never via ++ overrides,
+      # which would put the secret in argv where any ps on the box can read it.
       search_provider: you
+      ydc_api_key: ${oc.decode:${oc.env:YDC_API_KEY,null}}
+      tavily_api_key: ${oc.decode:${oc.env:TAVILY_API_KEY,null}}
       # terminal mode: search/browse write pages to a per-session disk workspace
       # and the read-only bash_command tool is exposed for the model to grep/read them.
       workspace: per_session
