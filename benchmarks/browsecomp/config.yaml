@@ -48,8 +48,11 @@ browsecomp_benchmark_agent:
       nudge_steps: true
       max_context_tokens: 196608
       context_reset_pct: 0.3
-      # token-based reset (50k standard); >0 overrides max_context_tokens*context_reset_pct
-      context_reset_tokens: 50000
+      # token-based reset; >0 overrides max_context_tokens*context_reset_pct. Raised
+      # from 50000: with resets now actually firing (see below), 50k capped working
+      # context at ~1/4 of max_context_tokens. 120000 leaves headroom for one
+      # generation plus tool schemas above the threshold.
+      context_reset_tokens: 80000
       context_reset_keep_rounds: 3
       max_run_retries: 3
       max_reset_count: null
@@ -59,6 +62,10 @@ browsecomp_benchmark_agent:
       # Estimate prompt tokens via the vLLM /tokenize endpoint before each model
       # call to decide context reset (skips the otherwise-wasted generation).
       save_model_call_using_vllm_tokenize_endpoint: true
+      # Durable progress board pinned to the system prompt, survives context resets.
+      # Was off: resets fired with nothing surviving them but 3 rounds, so a long
+      # trajectory re-derived the same findings after every reset. See app.py.
+      progress: true
       resources_server:
         type: resources_servers
         name: browsecomp_benchmark_resources_server
