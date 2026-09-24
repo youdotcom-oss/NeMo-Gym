@@ -33,8 +33,8 @@
 # Set BROWSECOMP_RUN_FULL=1 to run all 1266 instead, or override BROWSECOMP_SUBSET_N for a
 # different subset size. Note: a different N is its own random.Random(42).sample draw, not
 # a subset of another N's rows. See prepare.py's BROWSECOMP_SUBSET_N/_select_samples.
-export BROWSECOMP_RUN_FULL=0
-export BROWSECOMP_SUBSET_N=100
+export BROWSECOMP_RUN_FULL=${BROWSECOMP_RUN_FULL:-0}
+export BROWSECOMP_SUBSET_N=${BROWSECOMP_SUBSET_N:-100}
 
 # Used judge: GLM-5.1
 BROWSECOMP_JUDGE_MODEL="${BROWSECOMP_JUDGE_MODEL:?}"
