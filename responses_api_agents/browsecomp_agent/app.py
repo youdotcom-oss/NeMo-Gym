@@ -19,7 +19,7 @@ import re
 import time
 import traceback
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
 from fastapi import Request, Response
@@ -214,13 +214,17 @@ def _is_infrastructure_failure(exc: BaseException) -> bool:
 class BrowsecompAgent(SimpleResponsesAPIAgent):
     config: BrowsecompAgentConfig
     _policy_model_openai_client: Optional[NeMoGymAsyncOpenAI] = None
-    # qid -> the Task actually running that rollout. Lets a duplicate /run (e.g. the
-    # orchestrator's HTTP client retrying after a dropped connection, unaware the original
-    # request is still being served) attach to the original instead of starting a second,
-    # fully-independent rollout from step 0. In-memory only: scoped to this one server
-    # process, which is all that's needed since the failure mode is a lost response, not a
-    # process restart.
-    _inflight_rollouts: Dict[str, "asyncio.Task[BrowsecompAgentVerifyResponse]"] = PrivateAttr(default_factory=dict)
+    # (qid, task_index, rollout_index) -> the Task actually running that attempt. Lets a
+    # duplicate /run (e.g. the orchestrator's HTTP client retrying after a dropped
+    # connection, unaware the original request is still being served) attach to the
+    # original instead of starting a second, fully-independent rollout from step 0.
+    # task_index/rollout_index are included so distinct trials of the same question
+    # (identical input, different repeat) don't collide on qid alone. In-memory only:
+    # scoped to this one server process, which is all that's needed since the failure mode
+    # is a lost response, not a process restart.
+    _inflight_rollouts: Dict[
+        Tuple[str, Optional[Any], Optional[Any]], "asyncio.Task[BrowsecompAgentVerifyResponse]"
+    ] = PrivateAttr(default_factory=dict)
 
     def setup_webserver(self):
         app = super().setup_webserver()
@@ -769,8 +773,11 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
         if isinstance(rcp_input, str):
             rcp_input = [NeMoGymEasyInputMessage(role="user", content=rcp_input)]
         qid = _qid(json.dumps([m.model_dump() if hasattr(m, "model_dump") else m for m in rcp_input], default=str))
+        # Distinguishes independent trials of the same question (same qid, different
+        # repeat) from a genuine retry of the same attempt (same qid AND same indices).
+        dedup_key = (qid, getattr(body, "_ng_task_index", None), getattr(body, "_ng_rollout_index", None))
 
-        existing_task = self._inflight_rollouts.get(qid)
+        existing_task = self._inflight_rollouts.get(dedup_key)
         if existing_task is not None and not existing_task.done():
             timeout = self.config.dedup_wait_timeout_seconds
             print(
@@ -809,12 +816,12 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                 pass
 
         task = asyncio.ensure_future(self._run_rollout(request, body, qid, question_text))
-        self._inflight_rollouts[qid] = task
+        self._inflight_rollouts[dedup_key] = task
         try:
             return await task
         finally:
-            if self._inflight_rollouts.get(qid) is task:
-                del self._inflight_rollouts[qid]
+            if self._inflight_rollouts.get(dedup_key) is task:
+                del self._inflight_rollouts[dedup_key]
 
     async def _run_rollout(
         self, request: Request, body: BrowsecompAgentRunRequest, qid: str, question_text: str

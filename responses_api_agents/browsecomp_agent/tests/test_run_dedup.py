@@ -129,19 +129,20 @@ def _make_agent(client: _GatedServerClient, **config_kwargs) -> BrowsecompAgent:
     return BrowsecompAgent(config=_make_config(**config_kwargs), server_client=server_client)
 
 
-def _run_body() -> BrowsecompAgentRunRequest:
+def _run_body(**extra) -> BrowsecompAgentRunRequest:
     return BrowsecompAgentRunRequest.model_validate(
         {
             "responses_create_params": {"input": [{"role": "user", "content": "Q?"}]},
             "question": "Q?",
+            **extra,
         }
     )
 
 
-def _run(agent: BrowsecompAgent):
+def _run(agent: BrowsecompAgent, **extra):
     request_mock = MagicMock()
     request_mock.cookies = {}
-    return agent.run(request_mock, _run_body())
+    return agent.run(request_mock, _run_body(**extra))
 
 
 async def test_duplicate_run_attaches_to_in_flight_rollout_instead_of_restarting() -> None:
@@ -186,3 +187,29 @@ async def test_duplicate_run_falls_back_to_independent_rollout_if_original_is_hu
 
     gate.set()  # let the orphaned original finish so it doesn't linger past the test
     await original
+
+
+async def test_distinct_rollout_index_does_not_dedup() -> None:
+    """Same question, different trial (num_repeats > 1) -- these must NOT be treated as
+    duplicates of each other, or a multi-trial eval silently collapses to one rollout."""
+    gate = asyncio.Event()
+    client = _GatedServerClient(gate, reward=1.0)
+    agent = _make_agent(client, dedup_wait_timeout_seconds=5.0)
+
+    trial_0 = asyncio.create_task(_run(agent, _ng_task_index=3, _ng_rollout_index=0))
+    await asyncio.sleep(0)  # let it register itself in _inflight_rollouts and block on the gate
+
+    assert agent._inflight_rollouts, "the first trial must be tracked as in-flight"
+    trial_1 = asyncio.create_task(_run(agent, _ng_task_index=3, _ng_rollout_index=1))
+    await asyncio.sleep(0)
+
+    gate.set()
+    trial_0_result, trial_1_result = await asyncio.gather(trial_0, trial_1)
+
+    assert trial_0_result.reward == 1.0
+    assert trial_1_result.reward == 1.0
+    # Each trial must run its own full rollout -- neither may piggyback on the other's.
+    assert client.url_paths_called.count("/seed_session") == 2
+    assert client.url_paths_called.count("/v1/responses") == 2
+    assert client.url_paths_called.count("/verify") == 2
+    assert not agent._inflight_rollouts, "both entries must be cleaned up once the rollouts finish"
