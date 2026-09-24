@@ -12,17 +12,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import asyncio
 import hashlib
 import json
 import re
 import time
 import traceback
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import aiohttp
 from fastapi import Request, Response
-from pydantic import ConfigDict, ValidationError
+from pydantic import ConfigDict, PrivateAttr, ValidationError
 
 from nemo_gym.base_resources_server import (
     AggregateMetrics,
@@ -155,6 +156,14 @@ class BrowsecompAgentConfig(BaseResponsesAPIAgentConfig):
     max_run_retries: int = 1
     # Cap on the number of context resets per trajectory (None = unlimited).
     max_reset_count: Optional[int] = None
+    # A duplicate /run for a qid that's already in flight (e.g. the orchestrator's HTTP
+    # client retried after a dropped connection, not knowing the original request is still
+    # being served) waits for the ORIGINAL rollout instead of starting a second one from
+    # scratch. This is how long to wait before giving up on the original and starting an
+    # independent rollout anyway -- generous, since a legitimately slow (not hung) rollout
+    # must not be abandoned early. Grep logs for `[browsecomp][dedup_timeout]` to find
+    # rollouts that hit this ceiling -- those are the ones worth checking for a real hang.
+    dedup_wait_timeout_seconds: float = 3600.0
     # When set, save a JSONL snapshot of the full conversation at every context
     # reset and at the end of the trajectory, under
     # {snap_dir}/sample_{task_index}/attempt_{attempt}_{reset_<N>|final}.jsonl.
@@ -205,6 +214,13 @@ def _is_infrastructure_failure(exc: BaseException) -> bool:
 class BrowsecompAgent(SimpleResponsesAPIAgent):
     config: BrowsecompAgentConfig
     _policy_model_openai_client: Optional[NeMoGymAsyncOpenAI] = None
+    # qid -> the Task actually running that rollout. Lets a duplicate /run (e.g. the
+    # orchestrator's HTTP client retrying after a dropped connection, unaware the original
+    # request is still being served) attach to the original instead of starting a second,
+    # fully-independent rollout from step 0. In-memory only: scoped to this one server
+    # process, which is all that's needed since the failure mode is a lost response, not a
+    # process restart.
+    _inflight_rollouts: Dict[str, "asyncio.Task[BrowsecompAgentVerifyResponse]"] = PrivateAttr(default_factory=dict)
 
     def setup_webserver(self):
         app = super().setup_webserver()
@@ -748,13 +764,63 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
         return model_response
 
     async def run(self, request: Request, body: BrowsecompAgentRunRequest) -> BrowsecompAgentVerifyResponse:
-        cookies = request.cookies
-
         question_text = getattr(body, "question", None) or ""
         rcp_input = body.responses_create_params.input
         if isinstance(rcp_input, str):
             rcp_input = [NeMoGymEasyInputMessage(role="user", content=rcp_input)]
         qid = _qid(json.dumps([m.model_dump() if hasattr(m, "model_dump") else m for m in rcp_input], default=str))
+
+        existing_task = self._inflight_rollouts.get(qid)
+        if existing_task is not None and not existing_task.done():
+            timeout = self.config.dedup_wait_timeout_seconds
+            print(
+                f"[browsecomp][dedup][{qid}] duplicate /run received while an attempt is already "
+                f"in-flight for this task; attaching to it instead of starting a second rollout "
+                f"(will fall back to an independent rollout after {timeout:.0f}s if it hasn't finished)",
+                flush=True,
+            )
+            try:
+                result = await asyncio.wait_for(asyncio.shield(existing_task), timeout=timeout)
+                print(f"[browsecomp][dedup_attached][{qid}] returning the in-flight task's result", flush=True)
+                return result
+            except asyncio.TimeoutError:
+                print(
+                    f"[browsecomp][dedup_timeout][{qid}] the in-flight task has not "
+                    f"finished after {timeout:.0f}s -- treating it as HUNG and starting an "
+                    f"independent rollout. Grep for this tag to find suspected hangs.",
+                    flush=True,
+                )
+
+                timed_out_at = time.time()
+
+                def _log_late_completion(task: "asyncio.Task") -> None:
+                    if task.cancelled() or task.exception() is not None:
+                        return
+                    print(
+                        f"[browsecomp][dedup_late_completion][{qid}] the task flagged as hung at "
+                        f"dedup_timeout finished {time.time() - timed_out_at:.0f}s later -- it was "
+                        f"slow, not actually stuck; its result was discarded",
+                        flush=True,
+                    )
+
+                existing_task.add_done_callback(_log_late_completion)
+            except Exception:
+                # The in-flight task itself failed; fall through and start an independent rollout.
+                pass
+
+        task = asyncio.ensure_future(self._run_rollout(request, body, qid, question_text))
+        self._inflight_rollouts[qid] = task
+        try:
+            return await task
+        finally:
+            if self._inflight_rollouts.get(qid) is task:
+                del self._inflight_rollouts[qid]
+
+    async def _run_rollout(
+        self, request: Request, body: BrowsecompAgentRunRequest, qid: str, question_text: str
+    ) -> BrowsecompAgentVerifyResponse:
+        rollout_start_time = time.time()
+        cookies = request.cookies
         print(f"[browsecomp][start][{qid}] question={question_text[:200]!r}", flush=True)
 
         # Initialised BEFORE the try: the except block reads last_response_json, so binding it
@@ -815,7 +881,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                     continue
 
                 verify_request = BrowsecompAgentVerifyRequest.model_validate(
-                    body.model_dump() | {"response": response_json}
+                    body.model_dump() | {"response": response_json, "rollout_start_time": rollout_start_time}
                 )
 
                 verify_response = await self.server_client.post(
@@ -877,6 +943,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                     "response": last_response_json,
                     "reward": 0.0,
                     "agent_error": f"{type(e).__name__}: {str(e)[:300]}",
+                    "rollout_start_time": rollout_start_time,
                 }
                 | routing
             )

@@ -188,7 +188,10 @@ class BrowseCompRunRequest(BaseRunRequest):
 
 
 class BrowseCompVerifyRequest(BrowseCompRunRequest, BaseVerifyRequest):
-    pass
+    # Wall-clock time (time.time()) the agent's /run entered, set by the agent harness.
+    # Lets rollout logs measure pure model-inference time (this -> first tool call) separately
+    # from search-provider latency.
+    rollout_start_time: Optional[float] = None
 
 
 class JudgeEvaluation(BaseModel):
