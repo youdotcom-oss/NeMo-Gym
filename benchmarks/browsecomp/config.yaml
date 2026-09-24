@@ -50,7 +50,7 @@ browsecomp_benchmark_agent:
       max_context_tokens: 196608
       context_reset_pct: 0.3
       # token-based reset (50k standard); >0 overrides max_context_tokens*context_reset_pct
-      context_reset_tokens: 50000
+      context_reset_tokens: 40000
       context_reset_keep_rounds: 3
       max_run_retries: 3
       # >0 realistic worst case observed on 2026-09-24 was ~2.7h for a genuine (non-hung)

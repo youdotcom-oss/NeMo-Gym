@@ -1024,6 +1024,10 @@ class TavilySearchResourcesServer(SimpleResourcesServer):
                     await proc.wait()
                 except ProcessLookupError:
                     pass
+                print(
+                    f"[browsecomp][bash_timeout] command timed out after {duration:.0f}s: {(keystrokes or '')[:160]!r}",
+                    flush=True,
+                )
                 return f"[command timed out after {duration:.0f}s]\n[exit_code=-1]"
 
         stdout = _bash_truncate(stdout_b.decode(errors="replace"))

@@ -210,6 +210,7 @@ MAX_NUM_TRIES = 3
 
 _NUM_SERVER_DISCONNECTED_ERROR: int = 0
 _NUM_CLIENT_OS_ERROR: int = 0
+_NUM_TIMEOUT_ERROR: int = 0
 DISCONNECTED_CLIENT_OS_PRINT_INTERVAL: int = 100
 DISCONNECTED_CLIENT_OS_HELP_TEXT = """We've run into this issue in two different scenarios previously:
 1. Too many open connections and not enough sockets due to the file descriptor limit being hit.
@@ -264,6 +265,27 @@ async def request(
                     f"Hit {_NUM_CLIENT_OS_ERROR} global `ClientOSError` while querying {url}.\n{DISCONNECTED_CLIENT_OS_HELP_TEXT}",
                     flush=True,
                 )
+
+            await asyncio.sleep(0.5)
+        except asyncio.TimeoutError as e:
+            # Covers both `sock_connect` and `sock_read` ClientTimeout expiry (aiohttp's
+            # ServerTimeoutError subclasses asyncio.TimeoutError) -- i.e. a socket that went
+            # quiet for longer than `global_aiohttp_sock_read_timeout_seconds`. Always logged
+            # (not gated behind the debug flag) since this is the exact case a "the eval is
+            # hanging somewhere" investigation is grepping for. Grep `[request_timeout]`.
+            global _NUM_TIMEOUT_ERROR
+            _NUM_TIMEOUT_ERROR += 1
+            retries += 1
+            if _NUM_TIMEOUT_ERROR == 1 or _NUM_TIMEOUT_ERROR % DISCONNECTED_CLIENT_OS_PRINT_INTERVAL == 0:
+                print(
+                    f"[request_timeout url={url} error={type(e).__name__} retry={retries} elapsed_s={time.monotonic() - retry_start:.1f}] "
+                    f"Hit {_NUM_TIMEOUT_ERROR} global socket timeout(s) while querying {url}: {e}",
+                    flush=True,
+                )
+
+            if not _internal and num_tries >= MAX_NUM_TRIES:
+                raise e
+            num_tries += 1
 
             await asyncio.sleep(0.5)
         except Exception as e:

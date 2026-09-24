@@ -1119,6 +1119,13 @@ class _CaptureMiddleware:
             upstream_body = bytes(state["body"]) or exception_body
             error_category = _classify_status(upstream_status) if isinstance(upstream_status, int) else None
             error_category = error_category or _classify_exception(exc)
+            if error_category == "timeout":
+                print(
+                    f"[model_call_timeout][{rollout_from_path}] model_server={self._model_server_name} "
+                    f"path={path} elapsed_ms={(time.perf_counter() - start) * 1000.0:.0f} "
+                    f"{type(exc).__name__}: {exc}",
+                    flush=True,
+                )
             # Offload the blocking write+fsync so it never stalls the event loop.
             try:
                 await asyncio.to_thread(

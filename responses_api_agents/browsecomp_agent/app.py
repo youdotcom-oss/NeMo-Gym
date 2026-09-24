@@ -21,6 +21,7 @@ import time
 import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from uuid import uuid4
 
 import aiohttp
 from fastapi import Request, Response
@@ -226,6 +227,19 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
     _inflight_rollouts: Dict[
         Tuple[str, Optional[Any], Optional[Any]], "asyncio.Task[BrowsecompAgentVerifyResponse]"
     ] = PrivateAttr(default_factory=dict)
+    # (qid, dedup_id) -> the Task actually running that /v1/responses self-call. _run_rollout
+    # calls this agent's OWN /v1/responses endpoint to run an entire multi-step rollout in one
+    # HTTP request/response, which can legitimately take hours; if that connection drops
+    # mid-flight, ServerClient silently retries with the identical body (server_utils.py's
+    # retry-on-disconnect), and without this guard the retry started a second, fully-independent
+    # execution while the first kept running unseen -- confirmed via manual log tracing on
+    # 2026-09-24 (a qid with one [start] showing two concurrent step-counter progressions).
+    # dedup_id (set fresh per attempt in _run_rollout's metadata) distinguishes a genuine retry
+    # of THIS attempt from a legitimate concurrent repeat of the same question, which shares qid
+    # but gets its own dedup_id.
+    _inflight_responses: Dict[Tuple[str, str], "asyncio.Task[Tuple[NeMoGymResponse, Dict[str, str]]]"] = PrivateAttr(
+        default_factory=dict
+    )
 
     def setup_webserver(self):
         app = super().setup_webserver()
@@ -298,6 +312,78 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
         response: Response,
         body: NeMoGymResponseCreateParamsNonStreaming,
     ) -> NeMoGymResponse:
+        """Single-flight dedup wrapper -- see _inflight_responses' docstring for why this
+        exists. Callers that don't tag `metadata["_dedup_id"]` (anything hitting this
+        endpoint directly, outside _run_rollout) skip dedup entirely, unchanged from before
+        this guard existed."""
+        input_for_qid = body.input
+        if isinstance(input_for_qid, str):
+            input_for_qid = [NeMoGymEasyInputMessage(role="user", content=input_for_qid)]
+        qid = _qid(json.dumps([m.model_dump() if hasattr(m, "model_dump") else m for m in input_for_qid], default=str))
+        dedup_id = (body.metadata or {}).get("_dedup_id")
+
+        if dedup_id is None:
+            model_response, cookies_out = await self._responses_impl_inner(request, body)
+            for k, v in cookies_out.items():
+                response.set_cookie(k, v)
+            return model_response
+
+        key = (qid, dedup_id)
+        while True:
+            existing_task = self._inflight_responses.get(key)
+            if existing_task is None or existing_task.done():
+                break
+            timeout = self.config.dedup_wait_timeout_seconds
+            print(
+                f"[browsecomp][responses_dedup][{qid}] duplicate /v1/responses self-call "
+                f"received while an attempt is already in-flight for this task; attaching to "
+                f"it instead of starting a second execution (will cancel it and fall back to "
+                f"an independent call after {timeout:.0f}s if it hasn't finished)",
+                flush=True,
+            )
+            try:
+                model_response, cookies_out = await asyncio.wait_for(asyncio.shield(existing_task), timeout=timeout)
+                for k, v in cookies_out.items():
+                    response.set_cookie(k, v)
+                return model_response
+            except asyncio.TimeoutError:
+                print(
+                    f"[browsecomp][responses_dedup_timeout][{qid}] the in-flight self-call has "
+                    f"not finished after {timeout:.0f}s -- treating it as HUNG, cancelling it, "
+                    f"and starting an independent call. Grep for this tag to find suspected "
+                    f"hangs.",
+                    flush=True,
+                )
+                if self._inflight_responses.get(key) is existing_task:
+                    existing_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await existing_task
+                    if self._inflight_responses.get(key) is existing_task:
+                        del self._inflight_responses[key]
+                continue
+            except asyncio.CancelledError:
+                if existing_task.cancelled():
+                    continue
+                raise
+            except Exception:
+                break
+
+        task = asyncio.ensure_future(self._responses_impl_inner(request, body))
+        self._inflight_responses[key] = task
+        try:
+            model_response, cookies_out = await task
+        finally:
+            if self._inflight_responses.get(key) is task:
+                del self._inflight_responses[key]
+        for k, v in cookies_out.items():
+            response.set_cookie(k, v)
+        return model_response
+
+    async def _responses_impl_inner(
+        self,
+        request: Request,
+        body: NeMoGymResponseCreateParamsNonStreaming,
+    ) -> Tuple[NeMoGymResponse, Dict[str, str]]:
         body = body.model_copy(deep=True)
 
         if isinstance(body.input, str):
@@ -405,8 +491,9 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                         reset_armed = True
                         pre_reset_warning_steps.append(step)
                         print(
-                            f"[browsecomp][progress][{qid}] step={step} pre-call tokens={pre_prompt_tokens} > "
-                            f"{reset_threshold} — board-save warning injected; reset fires after this turn",
+                            f"[browsecomp][progress][{qid}] ts={time.time()} step={step} pre-call "
+                            f"tokens={pre_prompt_tokens} > {reset_threshold} — board-save warning injected; "
+                            f"reset fires after this turn",
                             flush=True,
                         )
                         if new_outputs and new_outputs[-1].type == "function_call_output":
@@ -468,7 +555,8 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
             # save_model_call_using_vllm_tokenize_endpoint is off) ---
             prompt_tokens = model_response.usage.input_tokens if model_response.usage else 0
             print(
-                f"[browsecomp][context_check][{qid}] step={step} usage_present={model_response.usage is not None} "
+                f"[browsecomp][context_check][{qid}] ts={time.time()} step={step} "
+                f"usage_present={model_response.usage is not None} "
                 f"prompt_tokens={prompt_tokens} reset_threshold={reset_threshold} "
                 f"would_reset={bool(reset_threshold and prompt_tokens > reset_threshold)} "
                 f"reset_count_so_far={reset_count}",
@@ -488,8 +576,8 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                     pre_reset_nudge_due = True
                     pre_reset_warning_steps.append(step)
                     print(
-                        f"[browsecomp][progress][{qid}] step={step} tokens={prompt_tokens} > {reset_threshold} — "
-                        f"board-save warning due; reset fires after next turn",
+                        f"[browsecomp][progress][{qid}] ts={time.time()} step={step} tokens={prompt_tokens} > "
+                        f"{reset_threshold} — board-save warning due; reset fires after next turn",
                         flush=True,
                     )
                 elif not self.config.progress:
@@ -546,8 +634,8 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
 
                 if tool_args_error is not None:
                     print(
-                        f"[browsecomp][tool_fail][{qid}] step={step} tool={output_function_call.name} "
-                        f"status=bad_arguments_json error={tool_args_error}",
+                        f"[browsecomp][tool_fail][{qid}] ts={time.time()} step={step} "
+                        f"tool={output_function_call.name} status=bad_arguments_json error={tool_args_error}",
                         flush=True,
                     )
                     tool_output = (
@@ -601,8 +689,9 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                         pass
                     if api_response.status >= 400:
                         print(
-                            f"[browsecomp][tool_fail][{qid}] step={step} tool={output_function_call.name} "
-                            f"status={api_response.status} body={tool_output[:300]}",
+                            f"[browsecomp][tool_fail][{qid}] ts={time.time()} step={step} "
+                            f"tool={output_function_call.name} status={api_response.status} "
+                            f"body={tool_output[:300]}",
                             flush=True,
                         )
                 if self.config.nudge_steps:
@@ -758,9 +847,11 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                 pre_reset_warning_steps=pre_reset_warning_steps,
             )
 
-        # Propogate any extra cookies necessary for downstream verification
-        for k, v in (*resources_server_cookies.items(), *model_server_cookies.items()):
-            response.set_cookie(k, v)
+        # Propogate any extra cookies necessary for downstream verification. Collected into a
+        # dict rather than applied to `response` directly here -- when this call attaches to an
+        # in-flight duplicate (see _responses_impl's dedup wrapper), the CALLER's `response`
+        # object needs these, not the one from whichever invocation actually ran.
+        cookies_out = dict(resources_server_cookies, **model_server_cookies)
 
         model_response.output = full_trajectory
         model_response.usage = usage
@@ -770,7 +861,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
         model_response.num_tool_calls = num_tool_calls
         model_response.hit_max_steps = hit_max_steps
         model_response.pre_reset_warning_steps = pre_reset_warning_steps
-        return model_response
+        return model_response, cookies_out
 
     async def run(self, request: Request, body: BrowsecompAgentRunRequest) -> BrowsecompAgentVerifyResponse:
         question_text = getattr(body, "question", None) or ""
@@ -863,8 +954,13 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
             for attempt in range(self.config.max_run_retries):
                 # Seed snapshot keys so responses() can name per-reset/-final files.
                 # (ported from gym-gitlab fe9845ee)
+                body.responses_create_params.metadata = dict(body.responses_create_params.metadata or {})
+                # Fresh per attempt: lets _responses_impl's dedup layer tell a ServerClient-level
+                # retry of THIS SAME outgoing call (identical body, so identical dedup_id) apart
+                # from a distinct concurrent repeat of the same question (different _run_rollout
+                # call, different dedup_id) -- see _inflight_responses.
+                body.responses_create_params.metadata["_dedup_id"] = str(uuid4())
                 if self.config.snap_dir:
-                    body.responses_create_params.metadata = dict(body.responses_create_params.metadata or {})
                     body.responses_create_params.metadata["task_index"] = str(getattr(body, "_ng_task_index", qid))
                     body.responses_create_params.metadata["attempt"] = str(attempt)
                     # Disambiguate num_repeats>1 rollouts (same _ng_task_index) in snap paths.
