@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import asyncio
+import contextlib
 import hashlib
 import json
 import re
@@ -228,6 +229,10 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
 
     def setup_webserver(self):
         app = super().setup_webserver()
+        print(
+            f"[browsecomp][config] dedup_wait_timeout_seconds={self.config.dedup_wait_timeout_seconds:.0f}",
+            flush=True,
+        )
         # For the /tokenize-based pre-call token estimation we need a direct
         # client to the policy model's vLLM /tokenize endpoint. Built only when
         # the feature is enabled. (ported from gym-gitlab b66e37c6)
@@ -777,13 +782,16 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
         # repeat) from a genuine retry of the same attempt (same qid AND same indices).
         dedup_key = (qid, getattr(body, "_ng_task_index", None), getattr(body, "_ng_rollout_index", None))
 
-        existing_task = self._inflight_rollouts.get(dedup_key)
-        if existing_task is not None and not existing_task.done():
+        while True:
+            existing_task = self._inflight_rollouts.get(dedup_key)
+            if existing_task is None or existing_task.done():
+                break
             timeout = self.config.dedup_wait_timeout_seconds
             print(
                 f"[browsecomp][dedup][{qid}] duplicate /run received while an attempt is already "
                 f"in-flight for this task; attaching to it instead of starting a second rollout "
-                f"(will fall back to an independent rollout after {timeout:.0f}s if it hasn't finished)",
+                f"(will cancel it and fall back to an independent rollout after {timeout:.0f}s if "
+                f"it hasn't finished)",
                 flush=True,
             )
             try:
@@ -793,27 +801,33 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
             except asyncio.TimeoutError:
                 print(
                     f"[browsecomp][dedup_timeout][{qid}] the in-flight task has not "
-                    f"finished after {timeout:.0f}s -- treating it as HUNG and starting an "
-                    f"independent rollout. Grep for this tag to find suspected hangs.",
+                    f"finished after {timeout:.0f}s -- treating it as HUNG, cancelling it, and "
+                    f"starting an independent rollout. Grep for this tag to find suspected hangs.",
                     flush=True,
                 )
-
-                timed_out_at = time.time()
-
-                def _log_late_completion(task: "asyncio.Task") -> None:
-                    if task.cancelled() or task.exception() is not None:
-                        return
-                    print(
-                        f"[browsecomp][dedup_late_completion][{qid}] the task flagged as hung at "
-                        f"dedup_timeout finished {time.time() - timed_out_at:.0f}s later -- it was "
-                        f"slow, not actually stuck; its result was discarded",
-                        flush=True,
-                    )
-
-                existing_task.add_done_callback(_log_late_completion)
+                # Only the duplicate that actually observes `existing_task` still registered
+                # does the cancelling -- if another concurrent duplicate's timeout already won
+                # this race, `del`/`cancel` below is a no-op and we just loop back to re-check
+                # the dict (it now points at whatever that other duplicate started).
+                if self._inflight_rollouts.get(dedup_key) is existing_task:
+                    existing_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await existing_task
+                    if self._inflight_rollouts.get(dedup_key) is existing_task:
+                        del self._inflight_rollouts[dedup_key]
+                continue
+            except asyncio.CancelledError:
+                if existing_task.cancelled():
+                    # `existing_task` itself was cancelled by a different duplicate's timeout
+                    # race above; loop back and re-attach to whatever it started (or start our
+                    # own if nothing is registered yet).
+                    continue
+                # Otherwise this coroutine's own task was cancelled from outside (e.g. the
+                # caller gave up) -- propagate, don't swallow it into a silent retry loop.
+                raise
             except Exception:
                 # The in-flight task itself failed; fall through and start an independent rollout.
-                pass
+                break
 
         task = asyncio.ensure_future(self._run_rollout(request, body, qid, question_text))
         self._inflight_rollouts[dedup_key] = task

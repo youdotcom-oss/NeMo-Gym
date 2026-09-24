@@ -24,6 +24,8 @@ import asyncio
 import json as jsonlib
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from nemo_gym.config_types import ModelServerRef, ResourcesServerRef
 from nemo_gym.openai_utils import (
     NeMoGymResponse,
@@ -185,8 +187,36 @@ async def test_duplicate_run_falls_back_to_independent_rollout_if_original_is_hu
     assert duplicate_result.reward == 1.0
     assert client.url_paths_called.count("/seed_session") == 2  # original (hung) + independent fallback
 
-    gate.set()  # let the orphaned original finish so it doesn't linger past the test
-    await original
+    # The abandoned original must be CANCELLED, not left running to completion for nothing --
+    # it was burning compute/API calls for a result nobody would ever read.
+    with pytest.raises(asyncio.CancelledError):
+        await original
+    assert original.cancelled()
+
+
+async def test_concurrent_timeouts_on_same_hung_original_start_only_one_independent_rollout() -> None:
+    """Two duplicates both time out on the same hung original at effectively the same time --
+    only one of them may cancel+replace it; the other must safely re-attach to whatever that
+    one starts (or start its own), never crash on an unhandled CancelledError, and the hung
+    original must end up cancelled exactly once."""
+    gate = asyncio.Event()  # deliberately never set -- the original hangs forever in seed_session
+    client = _GatedServerClient(gate, reward=1.0)
+    agent = _make_agent(client, dedup_wait_timeout_seconds=0.02)
+
+    original = asyncio.create_task(_run(agent))
+    await asyncio.sleep(0)
+
+    duplicate_a = asyncio.create_task(_run(agent))
+    duplicate_b = asyncio.create_task(_run(agent))
+
+    result_a, result_b = await asyncio.wait_for(asyncio.gather(duplicate_a, duplicate_b), timeout=2.0)
+
+    assert result_a.reward == 1.0
+    assert result_b.reward == 1.0
+    # Exactly one independent rollout replaced the hung original -- not two.
+    assert client.url_paths_called.count("/seed_session") == 2
+    assert original.cancelled()
+    assert not agent._inflight_rollouts, "the entry must be cleaned up once the rollout finishes"
 
 
 async def test_distinct_rollout_index_does_not_dedup() -> None:

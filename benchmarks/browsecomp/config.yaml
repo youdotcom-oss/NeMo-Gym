@@ -53,6 +53,11 @@ browsecomp_benchmark_agent:
       context_reset_tokens: 50000
       context_reset_keep_rounds: 3
       max_run_retries: 3
+      # >0 realistic worst case observed on 2026-09-24 was ~2.7h for a genuine (non-hung)
+      # max_steps rollout with several context resets; 4h gives headroom before a duplicate
+      # /run (e.g. the orchestrator retrying a dropped connection) cancels it as presumed-hung
+      # and starts an independent rollout. Code default is 3600s -- too short for this config.
+      dedup_wait_timeout_seconds: 14400
       max_reset_count: null
       # Set to a directory to record per-reset + final conversation snapshots
       # under {snap_dir}/sample_{task_index}/attempt_{attempt}_*.jsonl. Off when null.
