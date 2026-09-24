@@ -102,7 +102,7 @@ class GlobalAIOHTTPAsyncClientConfig(BaseModel):
         description="Max seconds to establish a TCP connection before giving up. No total/read timeout is set here so a legitimately long generation is never killed.",
     )
     global_aiohttp_sock_read_timeout_seconds: float = Field(
-        default=1800.0,
+        default=7200.0,
         description=(
             "Max seconds of silence between bytes on an open socket (resets on every chunk received, so it "
             "cannot cut off a long-running generation that is still producing output -- only a wedged read "
