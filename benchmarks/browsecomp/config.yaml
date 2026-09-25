@@ -8,12 +8,21 @@ Qwen3-235B-A22B-Instruct-2507-FP8:
       return_token_id_information: false
       uses_reasoning_parser: true
 
-## ported from gym-gitlab b66e37c6: same as policy_model but does NOT feed reasoning back into history
-#policy_model_no_interleaved_reasoning:
-#  _copy: policy_model
+## Pin the policy sampling params so every request uses these regardless of what
+## the caller sends or what extra_body carries -- see VLLMModelConfig.sampling_overrides.
+#policy_model:
 #  responses_api_models:
 #    vllm_model:
-#      uses_interleaved_reasoning: false
+#      sampling_overrides:
+#        temperature: 0.2
+#        top_p: 0.7
+
+# ported from gym-gitlab b66e37c6: same as policy_model but does NOT feed reasoning back into history
+policy_model_no_interleaved_reasoning:
+  _copy: policy_model
+  responses_api_models:
+    vllm_model:
+      uses_interleaved_reasoning: false
 
 browsecomp_benchmark_resources_server:
   resources_servers:
@@ -43,14 +52,15 @@ browsecomp_benchmark_agent:
   responses_api_agents:
     browsecomp_agent:
       entrypoint: app.py
-      # TODO: Made this 300 because the 100 subset run never saw success at 300+ steps. For full run, maybe set back to 400. 300 will just speed things up
-      max_steps: 300
+      # TODO: Made this 300 because the 100 subset run never saw success at 300+ steps. For full run, maybe set back to 400. 300 will just speed things up (there are nudge_steps implications here, which nudges at a % of max steps 4 times)
+      # TODO: 400 actually brought accuracy down and avg tool calls up
+      max_steps: 200
       keep_rounds: 9999
       nudge_steps: true
       max_context_tokens: 196608
       context_reset_pct: 0.3
       # token-based reset (50k standard); >0 overrides max_context_tokens*context_reset_pct
-      context_reset_tokens: 40000
+      context_reset_tokens: 50000
       context_reset_keep_rounds: 3
       max_run_retries: 3
       # >0 realistic worst case observed on 2026-09-24 was ~2.7h for a genuine (non-hung)
@@ -78,4 +88,4 @@ browsecomp_benchmark_agent:
         jsonl_fpath: benchmarks/browsecomp/data/browsecomp_benchmark.jsonl
         prompt_config: null
         prepare_script: benchmarks/browsecomp/prepare.py
-        num_repeats: 1
+        num_repeats: 3
