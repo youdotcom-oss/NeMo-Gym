@@ -79,9 +79,11 @@ PROGRESS_TOOL = {
         "the system prompt — the ONLY state that survives a context reset. "
         "This OVERWRITES the board — pass the complete current state every "
         "time; it is not appended. Record what is settled: confirmed facts "
-        "(with source), ruled-out candidates (with the constraint each "
-        "fails), and search angles already exhausted — not just your best "
-        "guess. The board is NEVER your final answer: to answer, emit "
+        "(with source), Candidates considered (log immediately, even "
+        "unconfirmed — do not wait until a candidate is verified or ruled "
+        "out to write it down), ruled-out candidates (with the constraint "
+        "each fails), and search angles already exhausted — not just your "
+        "best guess. The board is NEVER your final answer: to answer, emit "
         "'Exact Answer: ...' as a normal assistant message. Board format "
         "is described in the system prompt; keep it concise."
     ),
@@ -107,6 +109,11 @@ PROGRESS_SYSTEM_ADDENDUM = (
     "it). It is a ledger of SETTLED state. Track, concisely:\n"
     "• Constraints — the conditions the answer must satisfy simultaneously.\n"
     "• Confirmed facts — grounded findings, each with its source (URL/step).\n"
+    "• Candidates considered — every plausible answer you've proposed, each "
+    "with a one-line support/against note and when you proposed it. Log a "
+    "candidate the INSTANT you propose it, even before you've verified it — "
+    "do not wait until it's confirmed or ruled out. This is the one thing "
+    "on the board that must never require certainty to write down.\n"
     "• Ruled-out candidates — candidate + the constraint that eliminates it.\n"
     "• Search angles tried — exhausted angles and what they yielded, so you "
     "don't repeat them.\n"
@@ -182,6 +189,10 @@ class BrowsecompAgentConfig(BaseResponsesAPIAgentConfig):
     # result) before the reset fires; without progress the reset fires
     # immediately as before. (ported from bc_frankie w_progress_tracking)
     progress: bool = False
+    # Sampling by nudge milestone: values for [start, quarter, half, 0.875*max_steps].
+    # Shorter lists clamp to the last entry. None = leave sampling to the model server.
+    milestone_temperature: Optional[List[float]] = None
+    milestone_top_p: Optional[List[float]] = None
 
 
 class BrowsecompAgentRunRequest(BaseRunRequest):
@@ -270,6 +281,23 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
         if config.max_context_tokens and config.context_reset_pct:
             return int(config.max_context_tokens * config.context_reset_pct)
         return 0
+
+    def _sampling_for_step(self, step: int) -> Dict[str, float]:
+        """Sampling params for the current agent step, bucketed on the same
+        quarter/half/0.875*max_steps milestones as nudge_steps. Milestone lists
+        shorter than 4 entries clamp to their last value; an unset schedule
+        contributes nothing (model server keeps its own default)."""
+        max_steps = self.config.max_steps or 0
+        milestones = (max_steps // 4, max_steps // 2, int(max_steps * 0.875)) if max_steps else ()
+        bucket = sum(step >= m for m in milestones)
+        return {
+            key: schedule[min(bucket, len(schedule) - 1)]
+            for key, schedule in (
+                ("temperature", self.config.milestone_temperature),
+                ("top_p", self.config.milestone_top_p),
+            )
+            if schedule
+        }
 
     @staticmethod
     def _last_message_text(response: NeMoGymResponse) -> str:
@@ -396,6 +424,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
         usage = None
         step = 0
         hit_max_steps = False
+        forced_answer = False
         model_server_cookies = None  # update the cookies on every model response
         resources_server_cookies = request.cookies  # update the cookies on every resources server response
 
@@ -533,6 +562,8 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                                 break
                         new_outputs = chosen if chosen is not None else []
                         continue
+
+            new_body = new_body.model_copy(update=self._sampling_for_step(step))
 
             model_response = await self.server_client.post(
                 server_name=self.config.model_server.name,
@@ -717,6 +748,16 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                     full_trajectory[-1] = new_outputs[-1]
 
             # --- Nudge the model at milestone steps ---
+            # The near_end milestone used to be a prompt-only plea ("Do NOT make
+            # any more tool calls") appended to the tool output and left for the
+            # next ordinary iteration to (not) honor. Measured compliance across
+            # a full eval run was 0/119 -- the model kept calling tools every
+            # time, so every trajectory that reached this milestone ran on to
+            # max_steps and was truncated mid-tool-call, never emitting a final
+            # answer (see the plan doc / PR description for the 128/859 rollouts
+            # this recovers). near_end now forces a dedicated answer-only turn
+            # below (force_answer_now) instead of relying on the model to comply.
+            force_answer_now = False
             if self.config.nudge_steps and all_fn_calls:
                 quarter = self.config.max_steps // 4
                 half = self.config.max_steps // 2
@@ -737,16 +778,46 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                         "formulating your final answer based on the research "
                         "you have already done. Do not keep searching endlessly.]" % (step, self.config.max_steps)
                     )
-                elif step == near_end:
+                elif step >= near_end:
+                    # >= not == : a context reset's pre-call `continue` (see the
+                    # reset checks above) can skip a model call for the exact
+                    # iteration where step would equal near_end, silently
+                    # consuming that step number before this block ever runs.
+                    # With ==, the milestone is then skipped forever and the
+                    # rollout runs on to max_steps with no forced answer.
+                    # Confirmed happening in production: 2/2 hit_max_steps
+                    # rollouts in a live run had forced_answer=False, both
+                    # coinciding with a reset. break below still fires on the
+                    # first step >= near_end, so this can't double-trigger.
+                    force_answer_now = True
                     nudge_msg = (
                         "\n\n\n\n\n"
                         "[SYSTEM NOTE: URGENT — You have used %d out of %d turns. "
-                        "You are almost out of turns. YOU MUST deliver your final "
-                        "answer NOW using the information you have already gathered. "
-                        "Do NOT make any more tool calls. Provide your best answer "
-                        "immediately in the required format with 'Exact Answer:' on "
-                        "a line by itself.]" % (step, self.config.max_steps)
+                        "Tool calls are now DISABLED for your next turn — you cannot "
+                        "search or browse further. You MUST deliver your final "
+                        "answer NOW using only the information you have already "
+                        'gathered. A response of "unable to determine" scores '
+                        "identically to a wrong answer, so you must name your "
+                        "single most likely candidate on an 'Exact Answer:' line, "
+                        "however low your confidence — state the low confidence on "
+                        "the 'Confidence:' line instead." % (step, self.config.max_steps)
                     )
+                    if self.config.progress:
+                        # The forced turn's visible context is only the last few
+                        # rounds -- without pointing it at the board explicitly,
+                        # it can only re-derive from what's immediately in view,
+                        # biasing it toward whatever was searched most recently
+                        # rather than a correct candidate logged much earlier.
+                        nudge_msg += (
+                            " Before committing, review your progress board's "
+                            "'Candidates considered' list — some may have been "
+                            "logged well before your current visible history and "
+                            "are easy to have drifted away from. Pick the single "
+                            "best-supported candidate against every constraint, "
+                            "even if it isn't the one you were most recently "
+                            "investigating."
+                        )
+                    nudge_msg += "]"
 
                 if nudge_msg:
                     last_tool = new_outputs[-1]
@@ -778,6 +849,46 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                     new_outputs = self._extract_last_rounds(new_outputs)
                 else:
                     new_outputs = []
+
+            # --- Forced answer turn: at the near_end milestone, make ONE more
+            # model call with tools disabled (tool_choice="none", tools=[]) so
+            # the model cannot keep searching and must produce a message. This
+            # replaces relying on the (0% compliance, see above) prompt-only
+            # nudge, and ends the trajectory on an assistant message instead of
+            # the unresolved tool call that a plain max_steps truncation leaves.
+            if force_answer_now:
+                forced_body = body.model_copy(
+                    update={"input": body.input + new_outputs, "tools": [], "tool_choice": "none"}
+                )
+                forced_body = forced_body.model_copy(update=self._sampling_for_step(step))
+                forced_response = await self.server_client.post(
+                    server_name=self.config.model_server.name,
+                    url_path=self.url_path_for_request("/v1/responses", request),
+                    json=forced_body,
+                    cookies=model_server_cookies,
+                )
+                await raise_for_status(forced_response)
+                forced_response_json = await get_response_json(forced_response)
+                model_server_cookies = forced_response.cookies
+                try:
+                    forced_model_response = NeMoGymResponse.model_validate(forced_response_json)
+                except ValidationError as e:
+                    raise RuntimeError(
+                        f"Received an invalid response from model server on forced-answer turn: "
+                        f"{json.dumps(forced_response_json)}"
+                    ) from e
+                forced_output = forced_model_response.output
+                new_outputs.extend(forced_output)
+                full_trajectory.extend(forced_output)
+                usage = accumulate_response_usage(usage, forced_model_response.usage)
+                forced_answer = True
+                print(
+                    f"[browsecomp][forced_answer][{qid}] ts={time.time()} step={step} "
+                    f"max_steps={self.config.max_steps} — tools disabled, one final "
+                    f"model call made to commit an answer",
+                    flush=True,
+                )
+                break
 
             # Check if max steps is not None and if we have exhausted it.
             if self.config.max_steps and step >= self.config.max_steps:
@@ -860,6 +971,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
         model_response.reset_count = reset_count
         model_response.num_tool_calls = num_tool_calls
         model_response.hit_max_steps = hit_max_steps
+        model_response.forced_answer = forced_answer
         model_response.pre_reset_warning_steps = pre_reset_warning_steps
         return model_response, cookies_out
 
@@ -979,17 +1091,27 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                 # Retry if the model's LAST content-bearing turn was empty after <think>-strip.
                 # (Keyed on the last assistant message, matching bc_frankie, NOT the concatenated
                 # output_text — a final think-only turn retries even if an earlier turn had text.)
-                # Exception: a rollout that hit max_steps already spent its full step budget —
-                # retrying would spend max_steps again for a task that's already this hard, so
-                # that case is treated as a genuine failure instead of retried from scratch.
+                # Exception: a rollout that hit max_steps, OR whose forced-answer turn (near_end,
+                # ~87.5% of max_steps) came back empty, already spent nearly its full step budget
+                # -- retrying would spend that budget again for a task that's already this hard,
+                # so both cases are treated as a genuine failure instead of retried from scratch.
+                # forced_answer deliberately does NOT set hit_max_steps (an empty forced turn that
+                # fired very early, e.g. a tiny max_steps in tests, should still get a normal
+                # retry) so it needs its own check here.
                 response_json = await get_response_json(response)
                 last_response_json = response_json
                 validated_response = NeMoGymResponse.model_validate(response_json)
                 raw_output_text = self._last_message_text(validated_response)
                 cleaned_output_text = re.sub(r"<think>.*?</think>", "", raw_output_text, flags=re.DOTALL).strip()
                 hit_max_steps = getattr(validated_response, "hit_max_steps", False)
+                forced_answer = getattr(validated_response, "forced_answer", False)
                 # Need to get last_verify_response if all attempts are exhausted
-                if not cleaned_output_text and not hit_max_steps and attempt != self.config.max_run_retries - 1:
+                if (
+                    not cleaned_output_text
+                    and not hit_max_steps
+                    and not forced_answer
+                    and attempt != self.config.max_run_retries - 1
+                ):
                     print(
                         f"[browsecomp][retry][{qid}] attempt={attempt + 1}/{self.config.max_run_retries} "
                         f"reason=empty_output_after_think_strip",

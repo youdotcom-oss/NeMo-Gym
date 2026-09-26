@@ -32,6 +32,8 @@ from nemo_gym.openai_utils import (
 )
 from nemo_gym.server_utils import ServerClient
 from responses_api_agents.browsecomp_agent.app import (
+    PROGRESS_SYSTEM_ADDENDUM,
+    PROGRESS_TOOL,
     BrowsecompAgent,
     BrowsecompAgentConfig,
     BrowsecompAgentRunRequest,
@@ -144,6 +146,30 @@ class TestApp:
     def test_reset_threshold_disabled(self) -> None:
         config = _make_config(context_reset_tokens=0, max_context_tokens=0)
         assert BrowsecompAgent._reset_threshold(config) == 0
+
+    # ---- _sampling_for_step ----
+
+    def test_sampling_for_step_unset_schedule_is_noop(self, agent: BrowsecompAgent) -> None:
+        agent.config = _make_config(max_steps=200)
+        assert agent._sampling_for_step(1) == {}
+
+    def test_sampling_for_step_buckets_on_milestones(self, agent: BrowsecompAgent) -> None:
+        # max_steps=200 -> milestones at 50 (quarter), 100 (half), 175 (0.875)
+        agent.config = _make_config(
+            max_steps=200,
+            milestone_temperature=[0.6, 0.4, 0.2, 0.1],
+            milestone_top_p=[0.95, 0.8, 0.7, 0.6],
+        )
+        assert agent._sampling_for_step(1) == {"temperature": 0.6, "top_p": 0.95}
+        assert agent._sampling_for_step(50) == {"temperature": 0.4, "top_p": 0.8}
+        assert agent._sampling_for_step(100) == {"temperature": 0.2, "top_p": 0.7}
+        assert agent._sampling_for_step(175) == {"temperature": 0.1, "top_p": 0.6}
+        assert agent._sampling_for_step(200) == {"temperature": 0.1, "top_p": 0.6}
+
+    def test_sampling_for_step_clamps_short_schedule(self, agent: BrowsecompAgent) -> None:
+        agent.config = _make_config(max_steps=200, milestone_temperature=[0.6, 0.4])
+        assert agent._sampling_for_step(1) == {"temperature": 0.6}
+        assert agent._sampling_for_step(200) == {"temperature": 0.4}
 
     # ---- _compact_old_tool_messages ----
 
@@ -305,6 +331,200 @@ class TestApp:
 
         # max_steps=2: 2 model calls + 2 tool calls = 4 total posts
         assert agent.server_client.post.call_count == 4
+
+    # ---- forced answer at the near_end milestone ----
+
+    @staticmethod
+    def _forced_answer_posts(num_ordinary_steps: int) -> list:
+        """Mocked server_client.post responses for `num_ordinary_steps` steps that each make
+        one tool call, followed by one forced final call that returns an Exact Answer message.
+        Matches the near_end=int(max_steps*0.875) milestone with max_steps=8 -> near_end=7."""
+        posts = []
+        for i in range(1, num_ordinary_steps + 1):
+            fn_call = _make_fn_call("search", call_id=f"c{i}", args={"queries": ["q"]})
+            model_http = MagicMock()
+            model_http.ok = True
+            model_http.status = 200
+            model_http.read = AsyncMock(return_value=json.dumps(_make_model_response([fn_call])).encode())
+            model_http.cookies = {}
+            posts.append(model_http)
+
+            tool_http = MagicMock()
+            tool_http.ok = True
+            tool_http.status = 200
+            tool_http.content.read = AsyncMock(return_value=b"{}")
+            tool_http.cookies = {}
+            posts.append(tool_http)
+
+        forced_http = MagicMock()
+        forced_http.ok = True
+        forced_http.status = 200
+        forced_msg = _make_model_response([_make_msg("Exact Answer: 42\nConfidence: 30%")])
+        forced_http.read = AsyncMock(return_value=json.dumps(forced_msg).encode())
+        forced_http.cookies = {}
+        posts.append(forced_http)
+        return posts
+
+    async def test_forced_answer_fires_at_last_milestone(self) -> None:
+        """near_end (int(max_steps*0.875)) makes one extra model call with tools disabled
+        instead of relying on the (measured 0% compliance) prompt-only nudge, and the
+        trajectory ends on that call's assistant message rather than an unresolved tool call."""
+        agent = BrowsecompAgent(
+            config=_make_config(max_steps=8, nudge_steps=True),
+            server_client=MagicMock(spec=ServerClient),
+        )
+        agent.server_client.post = AsyncMock(side_effect=self._forced_answer_posts(7))
+
+        request_mock = MagicMock()
+        request_mock.cookies = {}
+        response_mock = MagicMock()
+        response_mock.set_cookie = MagicMock()
+        body = NeMoGymResponseCreateParamsNonStreaming(input=[{"role": "user", "content": "hard question"}])
+
+        result = await agent.responses(request_mock, response_mock, body)
+
+        # 7 ordinary steps * (1 model call + 1 tool call) + 1 forced call = 15
+        assert agent.server_client.post.call_count == 15
+        forced_call_body = agent.server_client.post.call_args_list[-1].kwargs["json"]
+        assert forced_call_body.tools == []
+        assert forced_call_body.tool_choice == "none"
+
+        assert result.forced_answer is True
+        assert result.hit_max_steps is False
+        last_item = result.output[-1]
+        assert last_item.type == "message"
+        assert "Exact Answer: 42" in last_item.content[0].text
+
+    async def test_forced_answer_fires_even_if_near_end_step_is_skipped(self) -> None:
+        """A context reset's pre-call `continue` can skip a model call for the exact
+        iteration where step would equal near_end, consuming that step number before the
+        nudge block ever runs for it. With max_steps=1, near_end=int(1*0.875)=0, which no
+        real step (>=1) can ever equal -- reproducing that skip deterministically without
+        needing to fake a real reset. The trigger must be `step >= near_end`, not `==`, or
+        this milestone is skipped forever and the rollout runs on to max_steps unanswered."""
+        agent = BrowsecompAgent(
+            config=_make_config(max_steps=1, nudge_steps=True),
+            server_client=MagicMock(spec=ServerClient),
+        )
+        agent.server_client.post = AsyncMock(side_effect=self._forced_answer_posts(1))
+
+        request_mock = MagicMock()
+        request_mock.cookies = {}
+        response_mock = MagicMock()
+        response_mock.set_cookie = MagicMock()
+        body = NeMoGymResponseCreateParamsNonStreaming(input=[{"role": "user", "content": "hard question"}])
+
+        result = await agent.responses(request_mock, response_mock, body)
+
+        # 1 ordinary step * (1 model call + 1 tool call) + 1 forced call = 3
+        assert agent.server_client.post.call_count == 3
+        assert result.forced_answer is True
+        assert result.hit_max_steps is False
+
+    async def test_forced_answer_instruction_contains_anti_refusal(self) -> None:
+        """The forced turn's prompt tells the model a refusal scores identically to a wrong
+        guess, so it always names a candidate rather than saying 'unable to determine'."""
+        agent = BrowsecompAgent(
+            config=_make_config(max_steps=8, nudge_steps=True),
+            server_client=MagicMock(spec=ServerClient),
+        )
+        agent.server_client.post = AsyncMock(side_effect=self._forced_answer_posts(7))
+
+        request_mock = MagicMock()
+        request_mock.cookies = {}
+        response_mock = MagicMock()
+        response_mock.set_cookie = MagicMock()
+        body = NeMoGymResponseCreateParamsNonStreaming(input=[{"role": "user", "content": "hard question"}])
+
+        await agent.responses(request_mock, response_mock, body)
+
+        forced_call_body = agent.server_client.post.call_args_list[-1].kwargs["json"]
+        last_tool_output = [item for item in forced_call_body.input if item.type == "function_call_output"][-1]
+        assert "unable to determine" in last_tool_output.output
+        assert "Exact Answer:" in last_tool_output.output
+
+    async def test_forced_answer_disabled_when_nudge_steps_false(self) -> None:
+        """With nudge_steps off, the old behavior is unchanged: the loop runs to max_steps
+        and hit_max_steps is set, with no forced-answer call made."""
+        agent = BrowsecompAgent(
+            config=_make_config(max_steps=2, nudge_steps=False),
+            server_client=MagicMock(spec=ServerClient),
+        )
+        fn_call = _make_fn_call("search", call_id="c1", args={"queries": ["q"]})
+        tool_response_data = _make_model_response([fn_call])
+
+        mock_http = MagicMock()
+        mock_http.ok = True
+        mock_http.status = 200
+        mock_http.read = AsyncMock(return_value=json.dumps(tool_response_data).encode())
+        mock_http.content.read = AsyncMock(return_value=b"{}")
+        mock_http.cookies = {}
+        agent.server_client.post = AsyncMock(return_value=mock_http)
+
+        request_mock = MagicMock()
+        request_mock.cookies = {}
+        response_mock = MagicMock()
+        response_mock.set_cookie = MagicMock()
+
+        body = NeMoGymResponseCreateParamsNonStreaming(input=[{"role": "user", "content": "hard question"}])
+        result = await agent.responses(request_mock, response_mock, body)
+
+        assert agent.server_client.post.call_count == 4  # unchanged from test_responses_respects_max_steps
+        assert result.hit_max_steps is True
+        assert result.forced_answer is False
+
+    # ---- candidate ledger on the progress board ----
+
+    def test_progress_system_addendum_includes_candidate_ledger(self) -> None:
+        """The board schema has a dedicated slot for unconfirmed candidates, distinct from
+        the settled 'Ruled-out candidates' and single 'Working hypothesis' slots -- an
+        early-found correct answer needs a persistent home even before it's verified."""
+        assert "Candidates considered" in PROGRESS_SYSTEM_ADDENDUM
+        assert "Candidates considered" in PROGRESS_TOOL["description"]
+
+    async def test_forced_answer_instruction_reviews_ledger_when_progress_enabled(self) -> None:
+        """With progress enabled, the forced-answer turn's prompt tells the model to consult
+        its board's candidate ledger before committing -- the forced turn's own visible
+        context is only the last few rounds, so without this it can only re-derive from
+        what's immediately in view, not a candidate logged much earlier in the run."""
+        agent = BrowsecompAgent(
+            config=_make_config(max_steps=8, nudge_steps=True, progress=True),
+            server_client=MagicMock(spec=ServerClient),
+        )
+        agent.server_client.post = AsyncMock(side_effect=self._forced_answer_posts(7))
+
+        request_mock = MagicMock()
+        request_mock.cookies = {}
+        response_mock = MagicMock()
+        response_mock.set_cookie = MagicMock()
+        body = NeMoGymResponseCreateParamsNonStreaming(input=[{"role": "user", "content": "hard question"}])
+
+        await agent.responses(request_mock, response_mock, body)
+
+        forced_call_body = agent.server_client.post.call_args_list[-1].kwargs["json"]
+        last_tool_output = [item for item in forced_call_body.input if item.type == "function_call_output"][-1]
+        assert "Candidates considered" in last_tool_output.output
+
+    async def test_forced_answer_instruction_omits_ledger_when_progress_disabled(self) -> None:
+        """Without progress (the current default -- there is no board to review), the
+        forced-answer prompt must not reference one."""
+        agent = BrowsecompAgent(
+            config=_make_config(max_steps=8, nudge_steps=True, progress=False),
+            server_client=MagicMock(spec=ServerClient),
+        )
+        agent.server_client.post = AsyncMock(side_effect=self._forced_answer_posts(7))
+
+        request_mock = MagicMock()
+        request_mock.cookies = {}
+        response_mock = MagicMock()
+        response_mock.set_cookie = MagicMock()
+        body = NeMoGymResponseCreateParamsNonStreaming(input=[{"role": "user", "content": "hard question"}])
+
+        await agent.responses(request_mock, response_mock, body)
+
+        forced_call_body = agent.server_client.post.call_args_list[-1].kwargs["json"]
+        last_tool_output = [item for item in forced_call_body.input if item.type == "function_call_output"][-1]
+        assert "Candidates considered" not in last_tool_output.output
 
     # ---- full trajectory (Part B) ----
 
@@ -487,6 +707,49 @@ class TestApp:
 
         attempt0 = _make_model_response([_make_msg("<think>ran out of steps</think>", msg_id="m1")])
         attempt0["hit_max_steps"] = True
+        verify_json = {
+            "reward": 0.0,
+            "response": attempt0,
+            "responses_create_params": {"input": [{"role": "user", "content": "q"}]},
+        }
+
+        def _http(read_bytes: bytes | None = None) -> MagicMock:
+            m = MagicMock()
+            m.ok = True
+            m.cookies = {}
+            if read_bytes is not None:
+                m.read = AsyncMock(return_value=read_bytes)
+            return m
+
+        # seed_session, /v1/responses (attempt 0), /verify -- no retry call
+        agent.server_client.post = AsyncMock(
+            side_effect=[
+                _http(),
+                _http(json.dumps(attempt0).encode()),
+                _http(json.dumps(verify_json).encode()),
+            ]
+        )
+
+        request_mock = MagicMock()
+        request_mock.cookies = {}
+        body = BrowsecompAgentRunRequest(
+            responses_create_params=NeMoGymResponseCreateParamsNonStreaming(input=[{"role": "user", "content": "q"}])
+        )
+        result = await agent.run(request_mock, body)
+
+        assert agent.server_client.post.call_count == 3  # no retry -> verified on attempt 0
+        assert result.reward == 0.0
+
+    async def test_run_does_not_retry_empty_output_after_forced_answer(self) -> None:
+        """A rollout whose forced-answer turn (near_end, tools disabled) came back empty already
+        spent nearly its full step budget -- retrying would spend that budget again, same
+        rationale as the hit_max_steps exception above. forced_answer deliberately does NOT set
+        hit_max_steps, so this needs its own check, not just reuse of that one."""
+        agent = BrowsecompAgent(config=_make_config(max_run_retries=2), server_client=MagicMock(spec=ServerClient))
+
+        attempt0 = _make_model_response([_make_msg("<think>tools disabled, nothing to say</think>", msg_id="m1")])
+        attempt0["hit_max_steps"] = False
+        attempt0["forced_answer"] = True
         verify_json = {
             "reward": 0.0,
             "response": attempt0,
