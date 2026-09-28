@@ -63,6 +63,8 @@ browsecomp_benchmark_agent:
 #      milestone_top_p: [0.95, 0.7, 0.5, 0.3]
       milestone_temperature: [1.0, 1.0, 1.0, 0.2]
       milestone_top_p: [0.95, 0.95, 0.95, 0.3]
+#      milestone_temperature: [1.0, 1.0, 1.0, 1.0]
+#      milestone_top_p: [0.95, 0.95, 0.95, 0.95]
       max_context_tokens: 196608
       context_reset_pct: 0.3
       # token-based reset (50k standard); >0 overrides max_context_tokens*context_reset_pct
